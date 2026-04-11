@@ -1,8 +1,15 @@
 import os
 import torch
 from models import Autoformer, Transformer, TimesNet, Nonstationary_Transformer, DLinear, FEDformer, \
-    Informer, LightTS, Reformer, ETSformer, Pyraformer, PatchTST, MICN, Crossformer, FiLM, VisionTS, VisionTSRAR, \
+    Informer, LightTS, Reformer, ETSformer, Pyraformer, PatchTST, MICN, Crossformer, FiLM, VisionTSRAR, \
     iTransformer, Koopa, TiDE, FreTS
+
+# VisionTS 依赖外部 visionts 包，可选导入
+try:
+    from models import VisionTS
+    _HAS_VISIONTS = True
+except ImportError:
+    _HAS_VISIONTS = False
 
 
 class Exp_Basic(object):
@@ -28,9 +35,10 @@ class Exp_Basic(object):
             'Koopa': Koopa,
             'TiDE': TiDE,
             'FreTS': FreTS, 
-            'VisionTS': VisionTS,
             'VisionTSRAR': VisionTSRAR,
         }
+        if _HAS_VISIONTS:
+            self.model_dict['VisionTS'] = VisionTS
         self.device = self._acquire_device()
         self.model = self._build_model().to(self.device)
 

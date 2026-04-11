@@ -93,8 +93,9 @@ echo -e "${YELLOW}[6/8] 安装 PyTorch...${NC}"
 echo "选择 PyTorch 版本："
 echo "1) CPU 版本（推荐，兼容性最好）"
 echo "2) ROCm 版本（如果 AMD GPU 支持）"
-echo "3) 跳过（手动安装）"
-read -p "请选择 [1/2/3]: " pytorch_choice
+echo "3) CUDA 版本（如果 NVIDIA GPU 支持）"
+echo "4) 跳过（手动安装）"
+read -p "请选择 [1/2/3/4]: " pytorch_choice
 
 case $pytorch_choice in
     1)
@@ -108,6 +109,11 @@ case $pytorch_choice in
         echo -e "${GREEN}✓ PyTorch ROCm 版本安装完成${NC}"
         ;;
     3)
+        echo "安装 CUDA 版本..."
+        conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -y
+        echo -e "${GREEN}✓ PyTorch CUDA 版本安装完成${NC}"
+        ;;
+    4)
         echo -e "${YELLOW}跳过 PyTorch 安装${NC}"
         ;;
     *)
@@ -121,6 +127,7 @@ echo ""
 echo -e "${YELLOW}[7/8] 安装项目依赖...${NC}"
 if [ -d "long_term_tsf" ]; then
     cd long_term_tsf
+    # 使用 Conda 环境中的 pip 安装其他依赖（不包括 torch）
     pip install -r requirements.txt
     cd ..
     echo -e "${GREEN}✓ long_term_tsf 依赖安装完成${NC}"

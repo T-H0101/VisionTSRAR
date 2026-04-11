@@ -1,12 +1,29 @@
-einops==0.4.0
-matplotlib==3.7.0
-numpy==1.23.5
-pandas==1.5.3
-patool==1.12
-reformer-pytorch==1.4.4
-scikit-learn==1.2.2
-scipy==1.10.1
-sktime==0.16.1
-sympy==1.11.1
-torch==1.7.1
-tqdm==4.64.1
+# VisionTSRAR long_term_tsf 依赖列表
+# 更新时间：2026
+
+# 核心深度学习（更新为兼容版本）
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 数据处理
+einops>=0.6.0
+numpy>=1.23.0
+pandas>=1.5.0
+scipy>=1.10.0
+
+# 机器学习
+scikit-learn>=1.2.0
+
+# 可视化和工具
+matplotlib>=3.7.0
+tqdm>=4.64.0
+sympy>=1.11.0
+
+# 时间序列专用
+sktime>=0.16.0
+
+# 工具
+patool>=1.12
+
+# 模型依赖（根据实际需求）
+reformer-pytorch>=1.4.4  # 如需使用 Reformer 模型则取消注释

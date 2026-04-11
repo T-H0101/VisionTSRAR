@@ -156,7 +156,7 @@ RAR_CKPT_FILES = {
 VQ_CKPT_FILE = "vq_ds16_c2i.pt"
 
 
-def download_rar_ckpt(ckpt_name, ckpt_dir='./ckpt/'):
+def download_rar_ckpt(ckpt_name, ckpt_dir='./'):
     """
     从 HuggingFace 下载 RAR GPT 预训练权重
     
@@ -192,7 +192,7 @@ def download_rar_ckpt(ckpt_name, ckpt_dir='./ckpt/'):
     return ckpt_path
 
 
-def download_vq_ckpt(ckpt_dir='./ckpt/'):
+def download_vq_ckpt(ckpt_dir='./'):
     """
     从 HuggingFace 下载 VQ Tokenizer 预训练权重
     

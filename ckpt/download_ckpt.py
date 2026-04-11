@@ -38,7 +38,7 @@ RAR_CKPT_FILES = {
 VQ_CKPT_FILE = "vq_ds16_c2i.pt"
 
 
-def download_rar_ckpt(ckpt_name, ckpt_dir='./ckpt/'):
+def download_rar_ckpt(ckpt_name, ckpt_dir='./'):
     """从 HuggingFace 下载 RAR GPT 预训练权重"""
     from huggingface_hub import hf_hub_download
 
@@ -67,7 +67,7 @@ def download_rar_ckpt(ckpt_name, ckpt_dir='./ckpt/'):
     return ckpt_path
 
 
-def download_vq_ckpt(ckpt_dir='./ckpt/'):
+def download_vq_ckpt(ckpt_dir='./'):
     """从 HuggingFace 下载 VQ Tokenizer 预训练权重"""
     from huggingface_hub import hf_hub_download
 
@@ -94,8 +94,8 @@ def download_vq_ckpt(ckpt_dir='./ckpt/'):
 
 def main():
     parser = argparse.ArgumentParser(description='下载 VisionTSRAR 预训练权重')
-    parser.add_argument('--ckpt_dir', type=str, default='./ckpt/',
-                        help='权重文件存储目录（默认: ./ckpt/）')
+    parser.add_argument('--ckpt_dir', type=str, default='./',
+                        help='权重文件存储目录（默认: 当前目录）')
     parser.add_argument('--rar_arch', type=str, default='rar_l_0.3b',
                         choices=['rar_l_0.3b'],
                         help='RAR GPT 架构（默认: rar_l_0.3b）')

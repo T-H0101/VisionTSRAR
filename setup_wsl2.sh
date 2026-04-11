@@ -36,7 +36,7 @@ echo ""
 echo -e "${YELLOW}[2/8] 安装基础依赖...${NC}"
 sudo apt install -y \
     python3 \
-    pip3 \
+    python3-pip \
     git \
     wget \
     curl \

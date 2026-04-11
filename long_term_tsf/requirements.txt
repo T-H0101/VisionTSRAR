@@ -1,9 +1,10 @@
 # VisionTSRAR long_term_tsf 依赖列表
-# 更新时间：2026
+# 更新时间：2024
+# 说明：移除了过时的 torch==1.7.1，使用更现代的 PyTorch 版本
 
-# 核心深度学习（更新为兼容版本）
-torch>=2.0.0
-torchvision>=0.15.0
+# 核心深度学习（由 Conda 安装，这里只声明依赖）
+# torch>=2.0.0  # 已在 Conda 环境中安装
+# torchvision>=0.15.0
 
 # 数据处理
 einops>=0.6.0
@@ -25,5 +26,5 @@ sktime>=0.16.0
 # 工具
 patool>=1.12
 
-# 模型依赖（根据实际需求）
-reformer-pytorch>=1.4.4  # 如需使用 Reformer 模型则取消注释
+# 模型依赖（按需启用）
+# reformer-pytorch>=1.4.4  # 如需使用 Reformer 模型则取消注释

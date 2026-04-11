@@ -3,8 +3,8 @@
 # 说明：移除了过时的 torch==1.7.1，使用更现代的 PyTorch 版本
 
 # 核心深度学习（由 Conda 安装，这里只声明依赖）
-# torch>=2.0.0  # 已在 Conda 环境中安装
-# torchvision>=0.15.0
+torch>=2.1.0  # 已在 Conda 环境中安装
+torchvision>=0.16.0
 
 # 数据处理
 einops>=0.6.0
@@ -26,5 +26,7 @@ sktime>=0.16.0
 # 工具
 patool>=1.12
 
+huggingface-hub>=0.1.0
+
 # 模型依赖（按需启用）
-# reformer-pytorch>=1.4.4  # 如需使用 Reformer 模型则取消注释
+reformer-pytorch>=1.4.4  # 如需使用 Reformer 模型则取消注释

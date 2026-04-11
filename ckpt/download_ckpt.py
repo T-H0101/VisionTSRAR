@@ -2,7 +2,8 @@
 """
 VisionTSRAR 预训练权重自动下载脚本
 
-从 HuggingFace (yucornell/RandAR) 下载 VQ Tokenizer 和 RandAR GPT 的预训练权重。
+从 HuggingFace 下载 VQ Tokenizer 和 RandAR GPT 的预训练权重。
+此脚本完全自包含，不依赖 torch/torchvision，避免 MKL 兼容性问题。
 
 用法:
     python download_ckpt.py [--ckpt_dir ./ckpt/] [--rar_arch rar_l_0.3b] [--vq_only] [--rar_only]
@@ -22,21 +23,73 @@ VisionTSRAR 预训练权重自动下载脚本
 """
 
 import argparse
-import importlib.util
 import os
 import sys
 
-# 直接加载 visiontsrar.util 模块，避免触发 __init__.py 中对 torch 的导入
-# 这样即使 torch 有 MKL 兼容性问题，也不会影响权重下载
-_project_root = os.path.join(os.path.dirname(__file__), '..')
-_util_path = os.path.join(_project_root, 'visiontsrar', 'util.py')
+# HuggingFace 仓库配置
+RAR_HF_REPO_ID = "ziqipang/RandAR"
 
-_spec = importlib.util.spec_from_file_location('visiontsrar.util', _util_path)
-_util_module = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_util_module)
+# RAR GPT 权重文件名映射表
+RAR_CKPT_FILES = {
+    "rar_l_0.3b": "randar_0.3b_llamagen_360k_bs_1024_lr_0.0004.safetensors",
+}
 
-download_rar_ckpt = _util_module.download_rar_ckpt
-download_vq_ckpt = _util_module.download_vq_ckpt
+# VQ Tokenizer 权重文件名
+VQ_CKPT_FILE = "vq_ds16_c2i.pt"
+
+
+def download_rar_ckpt(ckpt_name, ckpt_dir='./ckpt/'):
+    """从 HuggingFace 下载 RAR GPT 预训练权重"""
+    from huggingface_hub import hf_hub_download
+
+    if ckpt_name not in RAR_CKPT_FILES:
+        raise ValueError(f"Unknown RAR checkpoint: {ckpt_name}. Available: {list(RAR_CKPT_FILES.keys())}")
+
+    ckpt_filename = RAR_CKPT_FILES[ckpt_name]
+    ckpt_path = os.path.join(ckpt_dir, ckpt_filename)
+
+    if not os.path.isfile(ckpt_path):
+        os.makedirs(ckpt_dir, exist_ok=True)
+        print(f"Downloading RAR checkpoint '{ckpt_name}' from HuggingFace ({RAR_HF_REPO_ID})...")
+        try:
+            downloaded_path = hf_hub_download(
+                repo_id=RAR_HF_REPO_ID,
+                filename=ckpt_filename,
+                local_dir=ckpt_dir,
+            )
+            print(f"RAR checkpoint downloaded to: {downloaded_path}")
+        except Exception as e:
+            print(f"Failed to download from HuggingFace: {e}")
+            print(f"Please manually download '{ckpt_filename}' from https://huggingface.co/{RAR_HF_REPO_ID}")
+            print(f"and place it at: {ckpt_path}")
+            raise
+
+    return ckpt_path
+
+
+def download_vq_ckpt(ckpt_dir='./ckpt/'):
+    """从 HuggingFace 下载 VQ Tokenizer 预训练权重"""
+    from huggingface_hub import hf_hub_download
+
+    ckpt_path = os.path.join(ckpt_dir, VQ_CKPT_FILE)
+
+    if not os.path.isfile(ckpt_path):
+        os.makedirs(ckpt_dir, exist_ok=True)
+        print(f"Downloading VQ Tokenizer checkpoint from HuggingFace (FoundationVision/LlamaGen)...")
+        try:
+            downloaded_path = hf_hub_download(
+                repo_id="FoundationVision/LlamaGen",
+                filename=VQ_CKPT_FILE,
+                local_dir=ckpt_dir,
+            )
+            print(f"VQ Tokenizer checkpoint downloaded to: {downloaded_path}")
+        except Exception as e:
+            print(f"Failed to download from HuggingFace: {e}")
+            print(f"Please manually download '{VQ_CKPT_FILE}' from https://huggingface.co/FoundationVision/LlamaGen")
+            print(f"and place it at: {ckpt_path}")
+            raise
+
+    return ckpt_path
 
 
 def main():
@@ -53,14 +106,13 @@ def main():
 
     args = parser.parse_args()
 
-    # 确保 ckpt_dir 是绝对路径
     ckpt_dir = os.path.abspath(args.ckpt_dir)
 
     print("=" * 60)
     print("VisionTSRAR 预训练权重下载工具")
     print("=" * 60)
     print(f"权重目录: {ckpt_dir}")
-    print(f"HuggingFace 仓库: yucornell/RandAR")
+    print(f"HuggingFace 仓库: {RAR_HF_REPO_ID}")
     print()
 
     if not args.rar_only:
@@ -88,7 +140,6 @@ def main():
     print("所有权重下载完成！")
     print("=" * 60)
 
-    # 列出目录中的所有权重文件
     print(f"\n{ckpt_dir} 目录内容：")
     for f in os.listdir(ckpt_dir):
         fpath = os.path.join(ckpt_dir, f)

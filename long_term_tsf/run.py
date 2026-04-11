@@ -102,7 +102,7 @@ if __name__ == '__main__':
     parser.add_argument('--vm_pretrained', type=int, default=1,
                         help='是否加载MAE预训练权重（1=加载，0=不加载/随机初始化）。'
                              '预训练权重是VisionTS的核心，加载ImageNet预训练的MAE权重是零样本预测的基础')
-    parser.add_argument('--vm_ckpt', type=str, default="./ckpt/",
+    parser.add_argument('--vm_ckpt', type=str, default="../ckpt/",
                         help='MAE预训练权重的本地存储目录。'
                              '首次运行时会自动从Facebook下载权重到此目录')
     parser.add_argument('--vm_arch', type=str, default='mae_base',

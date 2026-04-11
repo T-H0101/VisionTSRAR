@@ -55,11 +55,11 @@ class Model(nn.Module):
         self.pred_len = config.pred_len
         self.seq_len = config.seq_len
 
-        # 创建VisionTSRAR核心模型
+        # 创建 VisionTSRAR 核心模型
         self.vm = VisionTSRAR(
             arch=config.rar_arch,
             finetune_type=getattr(config, 'ft_type', 'ln'),
-            ckpt_dir=getattr(config, 'vm_ckpt', './ckpt/'),
+            ckpt_dir=getattr(config, 'vm_ckpt', '../ckpt/'),
             load_ckpt=getattr(config, 'vm_pretrained', 1) == 1,
             vq_ckpt=getattr(config, 'vq_ckpt', None),
             rar_ckpt=getattr(config, 'rar_ckpt', None),

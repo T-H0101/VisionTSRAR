@@ -40,12 +40,18 @@ sudo apt install -y \
     git \
     wget \
     curl \
-    build-essential \
+    build-essential
+
+# 尝试安装 GUI 库（WSL2 无头模式可能不需要）
+echo "安装 GUI 支持库（可选，失败不影响）..."
+sudo apt install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
     libxrender1 \
-    libxext6
+    libxext6 \
+    2>/dev/null || echo "⚠️  GUI 库安装跳过（WSL2 无头模式正常）"
+
 echo -e "${GREEN}✓ 基础依赖安装完成${NC}"
 echo ""
 
@@ -117,7 +123,7 @@ if [ -d "long_term_tsf" ]; then
     cd long_term_tsf
     pip install -r requirements.txt
     cd ..
-    echo -e "${GREEN}✓ 项目依赖安装完成${NC}"
+    echo -e "${GREEN}✓ long_term_tsf 依赖安装完成${NC}"
 else
     echo -e "${RED}错误：找不到 long_term_tsf 目录${NC}"
     echo "请确保在项目根目录运行此脚本"
@@ -209,6 +215,6 @@ echo "3. 使用 VSCode 连接："
 echo "   code ."
 echo ""
 echo "4. 查看完整文档："
-echo "   cat Windows 迁移指南.md"
+echo "   cat docs/Windows 迁移指南.md"
 echo ""
 echo -e "${GREEN}祝你使用愉快！🚀${NC}"

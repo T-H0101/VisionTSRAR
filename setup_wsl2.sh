@@ -35,8 +35,8 @@ echo ""
 # 2. 安装基础依赖
 echo -e "${YELLOW}[2/8] 安装基础依赖...${NC}"
 sudo apt install -y \
-    python3.10 \
-    python3-pip \
+    python3 \
+    pip3 \
     git \
     wget \
     curl \

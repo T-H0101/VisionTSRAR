@@ -139,19 +139,24 @@ fi
 echo ""
 
 # 8. 下载预训练权重
-echo -e "${YELLOW}[8/8] 下载预训练权重...${NC}"
+echo -e "${YELLOW}[8/9] 下载预训练权重...${NC}"
 if [ -d "ckpt" ]; then
     cd ckpt
-    python3 download_ckpt.py
-    cd ..
-    echo -e "${GREEN}✓ 预训练权重下载完成${NC}"
+    if python3 download_ckpt.py; then
+        cd ..
+        echo -e "${GREEN}✓ 预训练权重下载完成${NC}"
+    else
+        cd ..
+        echo -e "${YELLOW}⚠️  权重下载失败，可稍后手动下载：${NC}"
+        echo "   cd ckpt && python3 download_ckpt.py"
+    fi
 else
     echo -e "${RED}错误：找不到 ckpt 目录${NC}"
     exit 1
 fi
 echo ""
 
-# 8. 创建测试脚本
+# 9. 创建测试脚本
 echo -e "${YELLOW}[8/8] 创建测试脚本...${NC}"
 cat > test_visiontsrar.sh << 'EOF'
 #!/bin/bash

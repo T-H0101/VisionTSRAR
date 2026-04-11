@@ -22,13 +22,21 @@ VisionTSRAR 预训练权重自动下载脚本
 """
 
 import argparse
+import importlib.util
 import os
 import sys
 
-# 将项目根目录加入搜索路径，以便导入 visiontsrar
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# 直接加载 visiontsrar.util 模块，避免触发 __init__.py 中对 torch 的导入
+# 这样即使 torch 有 MKL 兼容性问题，也不会影响权重下载
+_project_root = os.path.join(os.path.dirname(__file__), '..')
+_util_path = os.path.join(_project_root, 'visiontsrar', 'util.py')
 
-from visiontsrar.util import download_rar_ckpt, download_vq_ckpt
+_spec = importlib.util.spec_from_file_location('visiontsrar.util', _util_path)
+_util_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_util_module)
+
+download_rar_ckpt = _util_module.download_rar_ckpt
+download_vq_ckpt = _util_module.download_vq_ckpt
 
 
 def main():

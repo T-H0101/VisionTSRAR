@@ -158,7 +158,7 @@ tensorboard/
 # 数据集（体积大，通常单独下载）
 # dataset/
 data/
-*.csv
+# *.csv
 *.h5
 *.pkl
 *.parquet

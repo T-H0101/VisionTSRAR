@@ -281,7 +281,7 @@ output = (output - mean(output)) / std(output) * std(input) + mean(input)
 ### 训练配置
 
 ```bash
-cd /Users/tian/Desktop/VisionTS/VisionTSRAR/long_term_tsf
+cd VisionTSRAR/long_term_tsf
 
 python -u run.py \
   --is_training 1 \

@@ -42,9 +42,7 @@ echo ""
 echo "验证环境..."
 python3 --version
 python3 -c "import torch; print(f'✓ PyTorch: {torch.__version__}'); print(f'✓ CUDA: {torch.cuda.is_available()}')"
-if torch.cuda.is_available(); then
-    python3 -c "import torch; print(f'✓ GPU: {torch.cuda.get_device_name(0)}')"
-fi
+python3 -c "import torch; import os; os.system('echo ✓ GPU: ' + torch.cuda.get_device_name(0)) if torch.cuda.is_available() else None"
 
 # 2. 配置清华源（加速下载）
 echo ""

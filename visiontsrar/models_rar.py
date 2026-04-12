@@ -40,6 +40,48 @@ from .util import download_rar_ckpt, download_vq_ckpt
 
 
 # ============================================================
+# Straight-Through Estimator (STE)
+# 用于解决 argmax 不可导的问题
+# Forward: argmax（离散索引）
+# Backward: 梯度直接传给被选中位置的 logits
+# ============================================================
+class StraightThroughEstimator(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, logits):
+        ctx.save_for_backward(logits)
+        max_indices = logits.argmax(dim=-1)
+        return max_indices
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        logits, = ctx.saved_tensors
+        grad_logits = torch.zeros_like(logits)
+        max_indices = logits.argmax(dim=-1)
+        grad_logits.scatter_(dim=-1, index=max_indices.unsqueeze(-1), src=grad_output.unsqueeze(-1))
+        return grad_logits
+
+
+def ste_hard_topk(logits, k=1, dim=-1):
+    """
+    STE 版本的多 token 选择（用于选择 top-k）
+
+    Args:
+        logits: [B, L, V] 预测 logits
+        k: 每个样本选择的 token 数量
+        dim: 维度
+    Returns:
+        selected_tokens: [B, k] 选择的 token 索引
+    """
+    B, L, V = logits.shape
+    if k == 1:
+        tokens = StraightThroughEstimator.apply(logits)
+        return tokens
+    else:
+        _, topk_idx = torch.topk(logits.view(B, -1), k=k, dim=-1)
+        return topk_idx
+
+
+# ============================================================
 # RAR 架构配置表
 # ============================================================
 # 每种架构对应一组超参数和预训练权重文件名
@@ -167,9 +209,15 @@ class RARWrapper(nn.Module):
                 vq_ckpt_path = download_vq_ckpt(ckpt_dir)
                 self._load_vq_ckpt(vq_ckpt_path)
         
-        # 冻结 VQ Tokenizer 所有参数
-        for param in self.vq_tokenizer.parameters():
-            param.requires_grad = False
+        # 冻结 VQ Tokenizer 部分参数（端到端训练时只冻结 Encoder 和 Quantize）
+        # - Encoder: 冻结（预训练的视觉特征提取器，不需要改变）
+        # - Quantize: 冻结（码本，通过 EMA 更新，不支持梯度更新）
+        # - Decoder: 解冻（允许学习，实现端到端训练）
+        for name, param in self.vq_tokenizer.named_parameters():
+            if 'encoder' in name.lower() or 'quantize' in name.lower():
+                param.requires_grad = False
+            else:
+                param.requires_grad = True
         self.vq_tokenizer.eval()
         
         # ============================================================
@@ -295,22 +343,34 @@ class RARWrapper(nn.Module):
     def decode_tokens(self, token_indices: torch.Tensor, image_size: int = 256) -> torch.Tensor:
         """
         将 1D 离散 token 索引序列解码为图像
-        
+
         使用 VQModel.decode_tokens_to_image() 而非 decode_code()：
         - decode_code() 需要 2D 空间索引和手动构造 qz_shape
         - decode_tokens_to_image() 接受 1D 展平序列，自动处理 reshape 和尺寸调整
-        
+
+        注意：训练时不能使用 torch.no_grad()，否则会阻断梯度流
+
         Args:
             token_indices: [bs, L] 离散 token 索引（1D 展平）
-            image_size: 输出图像尺寸（默认256，VQ Tokenizer 原始输出尺寸）
+            image_size: 输出图像尺寸（默认256，VQ Tokenizer 的输入尺寸）
         Returns:
             reconstructed_image: [bs, 3, H, W] 重建图像，值域 [-1, 1]
         """
-        with torch.no_grad():
-            reconstructed_image = self.vq_tokenizer.decode_tokens_to_image(
-                token_indices, image_size=image_size
+        spatial_size = int(token_indices.shape[1] ** 0.5)
+        codes = token_indices.view(token_indices.shape[0], spatial_size, spatial_size)
+        qz_shape = (
+            token_indices.shape[0],
+            self.vq_tokenizer.codebook_embed_dim,
+            spatial_size,
+            spatial_size
+        )
+        quant = self.vq_tokenizer.quantize.get_codebook_entry(codes, qz_shape, channel_first=True)
+        reconstructed_image = self.vq_tokenizer.decode(quant)
+        if reconstructed_image.shape[-1] != image_size:
+            reconstructed_image = F.interpolate(
+                reconstructed_image, size=(image_size, image_size), mode="bicubic"
             )
-        
+
         return reconstructed_image
     
     def forward(
@@ -387,18 +447,28 @@ class RARWrapper(nn.Module):
         )
         
         # ============================================================
-        # Step 5: 从logits获取预测的token（取argmax）
+        # Step 5: 从logits获取预测的token（取argmax + STE）
         # ============================================================
-        predicted_tokens = token_logits.argmax(dim=-1)  # [bs, block_size]
-        
+        # 使用 STE (Straight-Through Estimator) 让梯度能流过 argmax
+        # Forward: argmax 返回离散索引
+        # Backward: 梯度直接传给被选中位置的 logits
+        predicted_tokens = StraightThroughEstimator.apply(token_logits)  # [bs, block_size]
+
         # 用可见区的真实token替换预测的前num_visible_tokens个
-        # 这确保输入区域的信息被完美保留
-        predicted_tokens[:, :num_visible_tokens] = visible_tokens
-        
+        # 问题：inplace 赋值会断开梯度链
+        # 解决：使用 mask + where 代替 inplace 赋值
+        # visible_tokens: [bs, num_visible_tokens], 需要填充到 [bs, block_size]
+        full_visible = torch.zeros_like(predicted_tokens)
+        full_visible[:, :num_visible_tokens] = visible_tokens
+        # mask: True = 使用 visible_tokens, False = 使用 predicted_tokens
+        mask = torch.zeros_like(predicted_tokens, dtype=torch.bool)
+        mask[:, :num_visible_tokens] = True
+        final_tokens = torch.where(mask, full_visible, predicted_tokens)
+
         # ============================================================
         # Step 6: VQ decode - token→重建图像
         # ============================================================
-        reconstructed_image = self.decode_tokens(predicted_tokens, image_size=vq_input_size)
+        reconstructed_image = self.decode_tokens(final_tokens, image_size=vq_input_size)
         
         # ============================================================
         # Step 7: 恢复到原始图像尺寸
@@ -421,10 +491,11 @@ class RARWrapper(nn.Module):
         reconstructed_image = (reconstructed_image - recon_mean) / recon_std
         reconstructed_image = reconstructed_image * img_std + img_mean
         
-        # 训练模式：返回重建图像，loss 设为 None（不使用 RAR 的交叉熵）
-        # 原因：最终目标是时序预测，应该使用时序 MSE loss
-        # RAR 的交叉熵是 token 空间的 loss，与时序优化目标不一致
-        return reconstructed_image, None
+        # 训练模式：返回 (重建图像, RAR CE loss)
+        # 问题：argmax 断梯度，导致 reconstructed_image 无法反向传播到 RAR GPT
+        # 解决：返回 RAR 内部的交叉熵 loss，让 RAR GPT 能学习
+        # 注意：VQ decoder 保持冻结，只有 RAR GPT 会收到梯度
+        return reconstructed_image, loss
     
     @torch.no_grad()
     def generate(

@@ -232,8 +232,8 @@ class VisionTSRAR(nn.Module):
                 dim=1, keepdim=True, unbiased=False
             ) + 1e-5
         )  # [bs x 1 x nvars]
-        stdev /= self.norm_const
-        x_enc /= stdev
+        stdev = stdev / self.norm_const
+        x_enc = x_enc / stdev
         # Channel Independent: 每个变量独立处理
         x_enc = einops.rearrange(x_enc, 'b s n -> b n s')  # [bs x nvars x seq_len]
 
@@ -536,8 +536,8 @@ class VisionTSRARpp(nn.Module):
                 dim=1, keepdim=True, unbiased=False,
             ) + 1e-5
         )
-        stdev /= self.norm_const
-        x_enc /= stdev
+        stdev = stdev / self.norm_const
+        x_enc = x_enc / stdev
         x_enc = einops.rearrange(x_enc, 'b s n -> b n s')
 
         # 处理输入长度不足的情况

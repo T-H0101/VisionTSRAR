@@ -410,7 +410,20 @@ class RARWrapper(nn.Module):
                 align_corners=False,
             )
         
-        return reconstructed_image, loss
+        # 值域对齐：将 VQ 解码输出 [-1, 1] 转换到 image_input 的值域
+        # 使用归一化对齐：output = (output - mean(output)) / std(output) * std(image_input) + mean(image_input)
+        recon_mean = reconstructed_image.mean(dim=[1, 2, 3], keepdim=True)
+        recon_std = reconstructed_image.std(dim=[1, 2, 3], keepdim=True) + 1e-8
+        img_mean = image_input.mean(dim=[1, 2, 3], keepdim=True)
+        img_std = image_input.std(dim=[1, 2, 3], keepdim=True)
+        
+        reconstructed_image = (reconstructed_image - recon_mean) / recon_std
+        reconstructed_image = reconstructed_image * img_std + img_mean
+        
+        # 训练模式：返回重建图像，loss 设为 None（不使用 RAR 的交叉熵）
+        # 原因：最终目标是时序预测，应该使用时序 MSE loss
+        # RAR 的交叉熵是 token 空间的 loss，与时序优化目标不一致
+        return reconstructed_image, None
     
     @torch.no_grad()
     def generate(

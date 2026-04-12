@@ -165,6 +165,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 pred = outputs.detach().cpu()
                 true = batch_y.detach().cpu()
 
+                # 使用 MSE loss 计算时序预测误差
                 loss = criterion(pred, true)
 
                 total_loss.append(loss)
@@ -241,11 +242,20 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                        # VisionTSRAR可返回模型自带loss，优先使用
+                        
+                        # 混合 Loss：MSE（主要）+ 交叉熵（正则化）
+                        mse_loss = criterion(outputs, batch_y)
+                        
+                        # 如果 model_loss 不为 None（RAR 的交叉熵），加入混合 Loss
                         if model_loss is not None:
-                            loss = model_loss
+                            # CE weight = 0.001（轻微正则化，防止 VQ 退化）
+                            ce_weight = 0.001
+                            loss = mse_loss + ce_weight * model_loss
+                            if (i + 1) % 100 == 0:
+                                print(f"[Loss] MSE: {mse_loss.item():.6f}, CE: {model_loss.item():.6f}, Total: {loss.item():.6f}")
                         else:
-                            loss = criterion(outputs, batch_y)
+                            loss = mse_loss
+                        
                         train_loss.append(loss.item())
                 else:
                     outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
@@ -253,11 +263,20 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     f_dim = -1 if self.args.features == 'MS' else 0
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                    # VisionTSRAR可返回模型自带loss，优先使用
+                    
+                    # 混合 Loss：MSE（主要）+ 交叉熵（正则化）
+                    mse_loss = criterion(outputs, batch_y)
+                    
+                    # 如果 model_loss 不为 None（RAR 的交叉熵），加入混合 Loss
                     if model_loss is not None:
-                        loss = model_loss
+                        # CE weight = 0.001（轻微正则化，防止 VQ 退化）
+                        ce_weight = 0.001
+                        loss = mse_loss + ce_weight * model_loss
+                        if (i + 1) % 100 == 0:
+                            print(f"[Loss] MSE: {mse_loss.item():.6f}, CE: {model_loss.item():.6f}, Total: {loss.item():.6f}")
                     else:
-                        loss = criterion(outputs, batch_y)
+                        loss = mse_loss
+                    
                     train_loss.append(loss.item())
 
                 pbar.set_description("epoch: {0} | loss: {1:.7f}".format(epoch + 1, loss.item()))

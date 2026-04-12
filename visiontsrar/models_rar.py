@@ -12,7 +12,8 @@ RAR 模型封装层 (RARWrapper)
 1. VQ Tokenizer 参数始终冻结（与原 VisionTS 冻结 MAE 的思路一致）
 2. RAR GPT 参数根据 finetune_type 决定冻结策略（默认仅微调 LayerNorm）
 3. 类别条件使用固定值0（时序预测不需要类别条件），通过 LabelEmbedder 的 dropout 机制处理
-4. token 顺序使用 raster（光栅顺序）而非 random，因为时序预测需要空间连续性
+4. 默认使用 random 顺序（RandAR原始设计），训练时随机打乱token顺序以学习更通用的依赖关系
+   推理时可切换为raster顺序以保持空间连续性
 """
 
 import os
@@ -60,9 +61,9 @@ RAR_ARCH_CONFIG = {
         "token_dropout_p": 0.1,
         "grad_checkpointing": True,
         "zero_class_qk": True,
-        # 推理参数（训练时用 position_order=raster）
+        # 推理参数（训练时用 position_order=random，推理时可用raster）
         "num_inference_steps": 88,
-        "position_order": "raster",
+        "position_order": "random",
         # 预训练权重文件名
         "rar_ckpt": "rbrar_l_0.3b_c2i.safetensors",
     },
@@ -107,7 +108,7 @@ class RARWrapper(nn.Module):
         ckpt_dir: str = './ckpt/',
         load_ckpt: bool = True,
         num_inference_steps: int = 88,
-        position_order: str = 'raster',
+        position_order: str = 'random',
         device: str = 'auto',
         vq_ckpt_path: str = None,
         rar_ckpt_path: str = None,
@@ -126,8 +127,8 @@ class RARWrapper(nn.Module):
             load_ckpt: 是否加载预训练权重
             num_inference_steps: RAR推理步数（并行解码的总步数，越小越快但质量越低）
             position_order: token顺序策略
-                - 'raster': 光栅顺序（从左到右，从上到下），适合时序预测的空间连续性
                 - 'random': 随机顺序（RandAR原始设计，训练时随机排列）
+                - 'raster': 光栅顺序（从左到右，从上到下），推理时使用，保持空间连续性
             device: 计算设备，'auto' 自动选择 CUDA > MPS > CPU
             vq_ckpt_path: VQ Tokenizer权重文件的完整路径（None则从HuggingFace自动下载）
             rar_ckpt_path: RAR GPT权重文件的完整路径（None则从HuggingFace自动下载）

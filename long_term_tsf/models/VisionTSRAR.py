@@ -64,7 +64,7 @@ class Model(nn.Module):
             vq_ckpt=getattr(config, 'vq_ckpt', None),
             rar_ckpt=getattr(config, 'rar_ckpt', None),
             num_inference_steps=getattr(config, 'num_inference_steps', 88),
-            position_order=getattr(config, 'position_order', 'raster'),
+            position_order=getattr(config, 'position_order', 'random'),
         )
 
         # 保存RAR采样参数

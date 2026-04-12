@@ -141,8 +141,8 @@ if __name__ == '__main__':
                         help='RAR GPT权重文件路径')
     parser.add_argument('--num_inference_steps', type=int, default=88,
                         help='RAR生成的推理步数（默认88）')
-    parser.add_argument('--position_order', type=str, default='raster',
-                        choices=['raster', 'random'], help='Token位置顺序')
+    parser.add_argument('--position_order', type=str, default='random',
+                        choices=['raster', 'random'], help='Token位置顺序（训练推荐random，推理推荐raster）')
     parser.add_argument('--temperature', type=float, default=1.0,
                         help='RAR采样温度')
     parser.add_argument('--rar_top_k', type=int, default=0,

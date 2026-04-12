@@ -66,7 +66,7 @@ class VisionTSRAR(nn.Module):
         ckpt_dir: str = './ckpt/',
         load_ckpt: bool = True,
         num_inference_steps: int = 88,
-        position_order: str = 'raster',
+        position_order: str = 'random',
         vq_ckpt: str = None,
         rar_ckpt: str = None,
     ):
@@ -84,8 +84,8 @@ class VisionTSRAR(nn.Module):
             load_ckpt: 是否加载预训练权重
             num_inference_steps: RAR推理步数（并行解码总步数）
             position_order: token顺序策略
-                - 'raster': 光栅顺序（推荐，适合时序预测的空间连续性）
-                - 'random': 随机顺序（RandAR原始设计）
+                - 'random': 随机顺序（推荐，训练时使用，符合RandAR原始设计）
+                - 'raster': 光栅顺序（推理时使用，保持空间连续性）
             vq_ckpt: VQ Tokenizer权重文件路径（None则自动下载）
             rar_ckpt: RAR GPT权重文件路径（None则自动下载）
         """

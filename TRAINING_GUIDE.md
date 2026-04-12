@@ -77,6 +77,7 @@ python -u run.py \
 | **train_epochs** | 20 | 训练轮数 |
 | **batch_size** | 32 | 批大小 |
 | **learning_rate** | 0.0001 | 学习率 |
+| **position_order** | random | Token 顺序（训练用 random，推理用 raster） |
 
 ### 可调参数
 
@@ -117,6 +118,16 @@ python -u run.py \
 
 # 精细调优
 --train_epochs 50
+```
+
+#### 4. Token 顺序（position_order）
+
+```bash
+# 训练时使用随机顺序（RandAR 原始设计）
+--position_order random
+
+# 推理时使用光栅顺序（保持空间连续性）
+--position_order raster
 ```
 
 ---
@@ -459,6 +470,7 @@ if (epoch + 1) % 5 == 0:
 - **batch_size**: 32（可调）
 - **train_epochs**: 20（可调）
 - **ce_weight**: 0.001（固定）
+- **position_order**: 'random'（训练用 random，推理用 raster）
 
 ### 问题排查
 - Loss = NaN → 降低学习率 + 梯度裁剪

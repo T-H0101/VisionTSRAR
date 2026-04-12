@@ -295,6 +295,7 @@ python -u run.py \
   --pred_len 96 \
   --rar_arch rar_l_0.3b \
   --ft_type ln \
+  --position_order random \
   --train_epochs 20 \
   --batch_size 32 \
   --learning_rate 0.0001 \
@@ -307,6 +308,7 @@ python -u run.py \
 |------|-----|------|
 | **rar_arch** | rar_l_0.3b | RandAR 模型架构 |
 | **ft_type** | ln | 微调类型（LayerNorm） |
+| **position_order** | random | Token 顺序（训练用 random，推理用 raster） |
 | **train_epochs** | 20 | 训练轮数 |
 | **batch_size** | 32 | 批大小 |
 | **learning_rate** | 0.0001 | 学习率 |

@@ -1,0 +1,14 @@
+VQ Quantization Error Test Results
+======================================================================
+
+Image Space Metrics:
+  MSE:      0.019880
+  MAE:      0.089472
+  PSNR:     7.39 dB
+  Rel Error:2.3961
+
+Time Series Space Metrics:
+  MSE:      0.244398
+  MAE:      0.396080
+  PSNR:     2.66 dB
+  Rel Error:1.3144

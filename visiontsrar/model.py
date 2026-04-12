@@ -114,7 +114,7 @@ class VisionTSRAR(nn.Module):
         self,
         context_len: int,
         pred_len: int,
-        periodicity: int = 1,
+        periodicity: int = 0,
         norm_const: float = 0.4,
         align_const: float = 0.4,
         interpolation: str = 'bilinear',
@@ -139,6 +139,8 @@ class VisionTSRAR(nn.Module):
             align_const: 对齐常数（默认0.4），控制输入占图像比例
             interpolation: 图像缩放插值方法
         """
+        if periodicity <= 0:
+            periodicity = 1
         # RAR/VQ 模型的固有图像参数
         # VQ Tokenizer 下采样率为16，所以：
         # - 256×256 图像 → 16×16 = 256 tokens (block_size)

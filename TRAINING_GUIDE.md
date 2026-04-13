@@ -2,7 +2,7 @@
 
 ## 📋 目录
 1. [环境准备](#1-环境准备)
-2. [代码上传](#2-代码上传)
+2. [代码改动说明](#2-代码改动说明)
 3. [权重下载](#3-权重下载)
 4. [依赖安装](#4-依赖安装)
 5. [训练命令](#5-训练命令)
@@ -28,25 +28,43 @@ pip show torch
 
 ---
 
-## 2. 代码上传
+## 2. 代码改动说明
 
-### 方式一：GitHub
-```bash
-# 在本地创建 git 仓库（如果还没有）
-cd VisionTSRAR
-git init
-git add .
-git commit -m "VisionTSRAR: 端到端时序预测模型"
+### 架构改动（2026-04-13）
 
-# 添加远程仓库（替换为你的仓库地址）
-git remote add origin https://github.com/YOUR_USERNAME/VisionTSRAR.git
-git push -u origin main
+本次训练使用新版架构，核心特点：
+
+| 特性 | 说明 |
+|------|------|
+| **训练目标** | 只训练 VQ Tokenizer，RAR GPT 完全冻结 |
+| **Loss 类型** | MAE（像素级重建），不再使用交叉熵 |
+| **Loss 计算** | 历史 MAE + 未来 MAE 分开计算 |
+| **Token 顺序** | 历史用 raster 顺序，未来用 random 顺序打乱 |
+
+### 训练流程
+
+```
+输入图像: [History_真实, Future_真实]
+    ↓ VQ encode
+tokens: [History_tokens, Future_tokens]
+    ↓ 打乱 token（历史 raster，未来 random）
+tokens_shuffled
+    ↓ VQ decode
+reconstructed_image
+    ↓
+loss = MAE(recon_history, History) + MAE(recon_future, Future)
 ```
 
-### 方式二：SCP 直接上传
-```bash
-# 在本地执行
-scp -r /Users/tian/Desktop/VisionTS/VisionTSRAR user@server:/path/to/VisionTSRAR
+### 推理流程
+
+```
+输入图像: [History_真实, Zeros]
+    ↓ VQ encode
+visible_tokens
+    ↓ RAR GPT generate
+generated_tokens
+    ↓ VQ decode
+reconstructed_image
 ```
 
 ---
@@ -120,12 +138,17 @@ nohup python3 run.py \
   --root_path ./dataset/ETT-small/ \
   --data_path ETTh1.csv \
   --freq h \
+  --periodicity 24 \
   --rar_arch rar_l_0.3b \
   --train_epochs 20 \
-  --batch_size 8 \
+  --batch_size 1 \
   --learning_rate 0.0001 \
   --use_gpu True \
   --gpu 0 \
+  --ft_type In \
+  --interpolation bilinear \
+  --norm_const 0.4 \
+  --align_const 0.4 \
   > training_etth1.log 2>&1 &
 ```
 
@@ -151,6 +174,7 @@ nohup python3 run.py \
   --learning_rate 0.0001 \
   --use_gpu True \
   --gpu 0 \
+  --ft_type In \
   > training_etth2.log 2>&1 &
 ```
 
@@ -176,6 +200,7 @@ nohup python3 run.py \
   --learning_rate 0.0001 \
   --use_gpu True \
   --gpu 0 \
+  --ft_type In \
   > training_ettm1.log 2>&1 &
 ```
 
@@ -201,6 +226,7 @@ nohup python3 run.py \
   --learning_rate 0.0001 \
   --use_gpu True \
   --gpu 0 \
+  --ft_type In \
   > training_etth1_720.log 2>&1 &
 ```
 
@@ -232,9 +258,9 @@ watch -n 1 nvidia-smi
 ```
 
 ### 预期 Loss 曲线
-- **初始 MSE Loss**: ~0.26 (标准化空间)
+- **初始 MAE Loss**: ~0.7-0.8 (标准化空间)
 - **DLinear 对比**: ~0.4
-- **我们的模型**: 应该 < 0.4
+- **我们的模型**: 应该稳步下降
 
 ### 停止训练
 ```bash
@@ -269,7 +295,7 @@ export https_proxy=http://proxy:port
 ```
 
 ### Q3: 训练 loss 为 None
-**解决**: 已修复，确保代码是最新的
+**解决**: 检查代码是否为最新版本，确保 `ft_type In` 设置正确
 
 ### Q4: 模型加载失败
 **解决**: 检查 ckpt 目录
@@ -277,8 +303,8 @@ export https_proxy=http://proxy:port
 ls -la ckpt/
 ```
 
-### Q5: 梯度流问题
-**解决**: 已修复，使用最新的 model.py 和 models_rar.py
+### Q5: Loss 不下降
+**解决**: 这是正常的，MAE loss 初期可能较高，模型会逐渐学习
 
 ---
 
@@ -292,6 +318,17 @@ ls -la ckpt/
 | `--seq_len` | 输入序列长度 | 96 |
 | `--pred_len` | 预测序列长度 | 96/720 |
 | `--rar_arch` | RAR 模型架构 | rar_l_0.3b |
+| `--ft_type` | **微调类型，重要！** | `In`（Inpainting 模式，冻结 RAR） |
+
+### ft_type 选项说明
+
+| ft_type | 说明 | 训练对象 |
+|---------|------|----------|
+| `In` | **Inpainting 模式** | 只训练 VQ Tokenizer |
+| `ln` | 仅 RMSNorm 可训练 | RAR GPT 部分可训练 |
+| `full` | 所有参数可训练 | RAR GPT + VQ Tokenizer |
+
+**重要**: 请使用 `--ft_type In` 进行训练
 
 ---
 
@@ -317,3 +354,16 @@ python test_real_etth1.py
 ```
 ✅ 所有测试通过！可以开始训练！
 ```
+
+---
+
+## 11. 代码改动记录
+
+详细改动请参考 [CHANGELOG.md](./CHANGELOG.md)
+
+### 核心改动：
+1. Loss 从 CE + MAE 混合改为纯 MAE
+2. Loss 计算从整图 MAE 改为历史 + 未来分开 MAE
+3. 训练时打乱 token 顺序（历史 raster，未来 random）
+4. RAR GPT 完全冻结（`ft_type=In`）
+5. 只训练 VQ Tokenizer 的 decoder 部分

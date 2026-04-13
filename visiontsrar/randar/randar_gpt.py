@@ -511,15 +511,29 @@ class RandARTransformer(nn.Module):
             token_order: [bsz, seq_len] 使用的位置顺序
         """
         # ===== 1. 准备 token 顺序 =====
+        # 【时序适配】区分 visible（历史）和 query（未来）的顺序策略
         bs = idx.shape[0]
+        
+        # 提前获取 num_visible（如果 visible_tokens 不为 None）
+        num_visible = visible_tokens.shape[1] if visible_tokens is not None else 0
+        
         if token_order is None:
             if self.position_order == "random":
-                # 随机排列：每个样本独立随机打乱 token 顺序
-                token_order = torch.arange(self.block_size, device=self.tok_embeddings.weight.device, dtype=torch.long)
-                token_order = token_order.unsqueeze(0).repeat(bs, 1)
+                # 【时序适配】Visible 用 Raster 顺序（保持历史时序因果）
+                # Query 用 Random 顺序（学习跨周期依赖）
+                visible_order = torch.arange(num_visible, device=self.tok_embeddings.weight.device, dtype=torch.long)
+                visible_order = visible_order.unsqueeze(0).repeat(bs, 1)  # [bs, num_visible]
+                
+                # Query 的随机顺序：从 num_visible 到 block_size 的随机排列
+                query_indices = torch.arange(num_visible, self.block_size, device=self.tok_embeddings.weight.device, dtype=torch.long)
+                query_indices = query_indices.unsqueeze(0).repeat(bs, 1)  # [bs, num_query]
                 for i in range(bs):
-                    token_order[i] = token_order[i][torch.randperm(self.block_size)]
+                    query_indices[i] = query_indices[i][torch.randperm(query_indices.shape[1])]
+                
+                # 合并：visible_order（raster） + query_indices（random）
+                token_order = torch.cat([visible_order, query_indices], dim=1)  # [bs, block_size]
                 token_order = token_order.contiguous()
+                
             elif self.position_order == "raster":
                 # 光栅扫描顺序：从左到右、从上到下
                 token_order = torch.arange(self.block_size, device=idx.device)
@@ -600,7 +614,45 @@ class RandARTransformer(nn.Module):
                 dim=1
             )
 
-        # ===== 3. Transformer 前向传播 =====
+        # ===== 3. 构建时序因果掩码（时序适配）=====
+        # 【时序因果约束】query tokens 只能依赖 visible tokens，禁止 query→query 依赖
+        # 这确保未来 token 不会互相依赖，只依赖历史
+        if visible_tokens is not None:
+            # 计算实际的序列长度（包含 cond, pos_instr, img_tok）
+            seq_len = cond_embeddings.shape[1] + 2 * self.block_size
+
+            # 基础因果掩码：下三角（包括自己）
+            causal_mask = torch.tril(
+                torch.ones(seq_len, seq_len, dtype=torch.bool, device=idx.device)
+            )
+
+            # 【时序因果约束】修改 query 区域的掩码
+            # 序列结构：[cond, pos0, tok0, pos1, tok1, ...]（交错结构）
+            # visible token 位置：cls_token_num + 2 * [0, 1, ..., num_visible-1]
+            # query token 位置：cls_token_num + 2 * [num_visible, ..., block_size-1]
+
+            # 计算 query token 在交错序列中的起始位置
+            query_start_instr = self.cls_token_num + 2 * num_visible
+            query_start_tok = query_start_instr + 1
+
+            # query token 位置列表
+            query_positions = torch.arange(
+                query_start_tok, seq_len, 2, device=idx.device
+            )
+
+            # 【核心约束】将所有 query→query 的注意力设为 False
+            for q_pos in query_positions:
+                causal_mask[q_pos, query_positions] = False
+
+            # 对角线恢复为 True（自己可以看自己）
+            causal_mask[:, ::2].fill_diagonal_(True)
+            causal_mask[:, 1::2].fill_diagonal_(True)
+
+            # 扩展为 batch 和 heads 维度：[batch, 1, seq_len, seq_len]
+            # 注意：这里 heads=1，因为后续的 SDPA 会处理多头部
+            mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(bs, 1, -1, -1)
+
+        # ===== 4. Transformer 前向传播 =====
         for layer in self.layers:
             if self.grad_checkpointing:
                 h = checkpoint(layer, h, freqs_cis, input_pos, mask, use_reentrant=False)

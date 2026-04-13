@@ -299,23 +299,23 @@ class RARWrapper(nn.Module):
     def _apply_finetune_strategy(self, finetune_type: str):
         """
         根据微调策略冻结 RAR GPT 参数
-        
+
         与 VisionTS 的策略一致：
         - 'ln': 仅 RMSNorm 参数可训练（对应 VisionTS 的 'ln' 即仅 LayerNorm）
         - 'bias': 仅偏置参数可训练
         - 'none': 冻结所有参数（零样本推理）
         - 'full': 所有参数可训练
+        - 'In': Inpainting 模式，冻结所有参数（只训练 VQ Tokenizer）
         """
         if finetune_type == 'full':
             return  # 不冻结任何参数
-        
+
         for n, param in self.rar_gpt.named_parameters():
             if finetune_type == 'ln':
-                # RandAR 使用 RMSNorm，权重名为 'weight'，属于包含 'norm' 的模块
                 param.requires_grad = 'norm' in n.lower()
             elif finetune_type == 'bias':
                 param.requires_grad = 'bias' in n
-            elif finetune_type == 'none':
+            elif finetune_type in ('none', 'In'):
                 param.requires_grad = False
             elif 'mlp' in finetune_type:
                 param.requires_grad = '.feed_forward.' in n or 'ffn' in n.lower()
@@ -376,126 +376,184 @@ class RARWrapper(nn.Module):
     def forward(
         self,
         image_input: torch.Tensor,
-        num_visible_tokens: int,
+        num_visible_tokens: int = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        训练模式 forward：使用 teacher forcing + inpainting 模式
-        
-        与 MAE 的 forward 不同：
-        - MAE: 输入图像 + 掩码 → 编码器(可见patch) → 解码器(预测被掩码patch) → 重建图像
-        - RAR: 输入图像 → VQ encode(全部token) → RAR GPT(teacher forcing + visible_tokens) → VQ decode → 重建图像
-        
-        训练时利用 RandARTransformer.forward_train() 的 visible_tokens 参数：
-        - 将可见区 token 作为已知条件传入
-        - RAR GPT 只对未知区域 token 计算 cross-entropy loss
-        - 这比"传入全部 token 再手动替换"更高效且语义正确
-        
+        训练/推理统一接口
+
+        【训练模式】：
+        1. VQ encode(整个图像) → all_tokens
+        2. 打乱 token 顺序：visible 用 raster，query 用 random
+        3. VQ decode(shuffled_tokens) → recon_shuffled
+        4. 逆变换恢复原始顺序
+        5. Loss = MAE(recon_history, history) + MAE(recon_future, future)
+        6. 梯度只传给 VQ Tokenizer
+
+        【推理模式】：
+        1. VQ encode(可见部分) → visible_tokens
+        2. RAR GPT generate → generated_tokens
+        3. VQ decode(generated_tokens) → reconstructed_image
+
         Args:
-            image_input: [bs, 3, H, W] 完整图像（左半有值，右半零填充）
-                         注意：对于 VisionTS，H=W=224，但实际上 RAR 需要 256×256
-                         我们在内部处理这个尺寸差异
+            image_input: [bs, 3, H, W] 完整图像（训练时含真实future，推理时右半为零）
             num_visible_tokens: int, 可见区域的token数量
-                                对应图像左半部分（输入时序渲染的区域）
-        
+
         Returns:
             reconstructed_image: [bs, 3, H, W] 重建图像
-            loss: 训练loss（交叉熵），推理时为 None
+            loss: 分开计算的 MAE loss（训练时），推理时为 None
         """
         bs = image_input.shape[0]
-        
+
         # ============================================================
         # Step 1: 调整图像尺寸以匹配 VQ Tokenizer 的要求
         # ============================================================
-        # VQ Tokenizer 将 256×256 图像编码为 16×16=256 个 token
-        # VisionTS 使用 224×224 图像，需要先上采样到 256×256
-        vq_input_size = 256  # VQ Tokenizer 期望的输入尺寸
+        vq_input_size = 256
         if image_input.shape[-1] != vq_input_size or image_input.shape[-2] != vq_input_size:
             image_resized = F.interpolate(
                 image_input, size=(vq_input_size, vq_input_size), mode='bilinear', align_corners=False
             )
         else:
             image_resized = image_input
-        
+
         # ============================================================
         # Step 2: VQ encode - 图像→离散token索引
         # ============================================================
         all_tokens = self.encode_image(image_resized)  # [bs, 256]
-        
-        # ============================================================
-        # Step 3: 准备可见区 token 和目标 token
-        # ============================================================
-        # 在 raster 顺序下，前 num_visible_tokens 个 token 对应图像左半部分
-        visible_tokens = all_tokens[:, :num_visible_tokens]  # [bs, num_visible_tokens]
-        target_tokens = all_tokens  # 全部token作为目标（teacher forcing）
-        
-        # 类别条件：使用固定值0（时序预测不需要类别条件）
-        # LabelEmbedder 在训练时会对条件标签做 dropout（class_dropout_prob=0.1），
-        # 这实际上充当了正则化效果
-        cond_idx = torch.zeros(bs, dtype=torch.long, device=image_input.device)
-        
-        # ============================================================
-        # Step 4: RAR GPT forward（训练模式，teacher forcing + inpainting）
-        # ============================================================
-        # 利用 randar_gpt.forward_train() 的 visible_tokens 参数
-        # 已知 token 被嵌入到序列开头（cond 之后），对应位置的 loss 被屏蔽
-        token_logits, loss, token_order = self.rar_gpt(
-            idx=all_tokens,              # 全部token用于 teacher forcing
-            cond_idx=cond_idx,           # 类别条件（固定为0）
-            token_order=None,            # 使用 position_order 决定顺序
-            targets=target_tokens,       # 目标token（与输入相同）
-            visible_tokens=visible_tokens,  # 传入可见区 token，启用 inpainting 模式
-        )
-        
-        # ============================================================
-        # Step 5: 从logits获取预测的token（取argmax + STE）
-        # ============================================================
-        # 使用 STE (Straight-Through Estimator) 让梯度能流过 argmax
-        # Forward: argmax 返回离散索引
-        # Backward: 梯度直接传给被选中位置的 logits
-        predicted_tokens = StraightThroughEstimator.apply(token_logits)  # [bs, block_size]
-
-        # 用可见区的真实token替换预测的前num_visible_tokens个
-        # 问题：inplace 赋值会断开梯度链
-        # 解决：使用 mask + where 代替 inplace 赋值
-        # visible_tokens: [bs, num_visible_tokens], 需要填充到 [bs, block_size]
-        full_visible = torch.zeros_like(predicted_tokens)
-        full_visible[:, :num_visible_tokens] = visible_tokens
-        # mask: True = 使用 visible_tokens, False = 使用 predicted_tokens
-        mask = torch.zeros_like(predicted_tokens, dtype=torch.bool)
-        mask[:, :num_visible_tokens] = True
-        final_tokens = torch.where(mask, full_visible, predicted_tokens)
 
         # ============================================================
-        # Step 6: VQ decode - token→重建图像
+        # Step 3: 训练/推理分支
         # ============================================================
-        reconstructed_image = self.decode_tokens(final_tokens, image_size=vq_input_size)
-        
-        # ============================================================
-        # Step 7: 恢复到原始图像尺寸
-        # ============================================================
-        if reconstructed_image.shape[-1] != image_input.shape[-1]:
-            reconstructed_image = F.interpolate(
-                reconstructed_image,
+        if self.training:
+            # 【训练模式】打乱 token 顺序 + VQ 重建 + 分开 MAE
+            return self._forward_train(
+                image_resized, all_tokens, image_input, num_visible_tokens, vq_input_size
+            )
+        else:
+            # 【推理模式】使用 RAR GPT 生成
+            if num_visible_tokens is None:
+                raise ValueError("num_visible_tokens must be provided in inference mode")
+
+            visible_tokens = all_tokens[:, :num_visible_tokens]
+
+            cond_idx = torch.zeros(bs, dtype=torch.long, device=image_input.device)
+            generated_tokens = self.rar_gpt.generate(
+                cond=cond_idx,
+                token_order=None,
+                visible_tokens=visible_tokens,
+            )
+
+            reconstructed_image = self.decode_tokens(generated_tokens, image_size=vq_input_size)
+
+            if reconstructed_image.shape[-1] != image_input.shape[-1]:
+                reconstructed_image = F.interpolate(
+                    reconstructed_image,
+                    size=(image_input.shape[-2], image_input.shape[-1]),
+                    mode='bilinear',
+                    align_corners=False,
+                )
+
+            return reconstructed_image, None
+
+    def _forward_train(
+        self,
+        image_resized: torch.Tensor,
+        all_tokens: torch.Tensor,
+        image_input: torch.Tensor,
+        num_visible_tokens: int,
+        vq_input_size: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        训练模式 forward：使用 RAR GPT 生成 + MAE/MSE loss
+
+        流程：
+        1. VQ encode 获取 all_tokens
+        2. RAR GPT forward（冻结但参与，计算 token 顺序）
+        3. VQ decode
+        4. 计算 MAE/MSE loss（历史 + 未来）
+        """
+        bs = all_tokens.shape[0]
+
+        # -------------------------------------------------
+        # Step 1: 准备 visible tokens 和条件
+        # -------------------------------------------------
+        visible_tokens = all_tokens[:, :num_visible_tokens]
+        cond_idx = torch.zeros(bs, dtype=torch.long, device=all_tokens.device)
+
+        # -------------------------------------------------
+        # Step 2: RAR GPT forward（冻结但参与）
+        # 使用 forward_train 方法，它会：
+        # - 对 tokens 进行重排（visible raster, query random）
+        # - 通过 transformer
+        # - 输出 logits
+        # -------------------------------------------------
+        with torch.no_grad():
+            token_logits, _, token_order = self.rar_gpt(
+                idx=all_tokens,
+                cond_idx=cond_idx,
+                token_order=None,
+                targets=all_tokens,
+                visible_tokens=visible_tokens,
+            )
+
+        # -------------------------------------------------
+        # Step 3: 从 logits 获取预测 tokens（STE）
+        # -------------------------------------------------
+        predicted_tokens = torch.argmax(token_logits, dim=-1)
+
+        # -------------------------------------------------
+        # Step 4: VQ decode 预测的 tokens
+        # -------------------------------------------------
+        recon_image = self.decode_tokens(predicted_tokens, image_size=vq_input_size)
+
+        # -------------------------------------------------
+        # Step 5: 恢复到原始图像尺寸
+        # -------------------------------------------------
+        if recon_image.shape[-1] != image_input.shape[-1]:
+            recon_image = F.interpolate(
+                recon_image,
                 size=(image_input.shape[-2], image_input.shape[-1]),
                 mode='bilinear',
                 align_corners=False,
             )
-        
-        # 值域对齐：将 VQ 解码输出 [-1, 1] 转换到 image_input 的值域
-        # 使用归一化对齐：output = (output - mean(output)) / std(output) * std(image_input) + mean(image_input)
-        recon_mean = reconstructed_image.mean(dim=[1, 2, 3], keepdim=True)
-        recon_std = reconstructed_image.std(dim=[1, 2, 3], keepdim=True) + 1e-8
-        img_mean = image_input.mean(dim=[1, 2, 3], keepdim=True)
-        img_std = image_input.std(dim=[1, 2, 3], keepdim=True)
-        
-        reconstructed_image = (reconstructed_image - recon_mean) / recon_std
-        reconstructed_image = reconstructed_image * img_std + img_mean
-        
-        # 训练模式：返回 (重建图像, RAR CE loss)
-        # 问题：argmax 断梯度，导致 reconstructed_image 无法反向传播到 RAR GPT
-        # 解决：返回 RAR 内部的交叉熵 loss，让 RAR GPT 能学习
-        # 注意：VQ decoder 保持冻结，只有 RAR GPT 会收到梯度
-        return reconstructed_image, loss
+
+        # -------------------------------------------------
+        # Step 6: 值域对齐
+        # -------------------------------------------------
+        recon_image = self._normalize_image(recon_image, image_input)
+
+        # -------------------------------------------------
+        # Step 7: 计算 MAE/MSE loss（历史 + 未来分开）
+        # -------------------------------------------------
+        H = image_input.shape[2]
+        W = image_input.shape[3]
+        mid_w = W // 2
+
+        history_input = image_input[:, :, :, :mid_w]
+        future_input = image_input[:, :, :, mid_w:]
+        history_recon = recon_image[:, :, :, :mid_w]
+        future_recon = recon_image[:, :, :, mid_w:]
+
+        loss_mae = F.l1_loss(history_recon, history_input) + F.l1_loss(future_recon, future_input)
+        loss_mse = F.mse_loss(history_recon, history_input) + F.mse_loss(future_recon, future_input)
+
+        loss = loss_mae + loss_mse
+
+        return recon_image, loss
+
+    def _normalize_image(
+        self,
+        recon: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """值域对齐：将重建图像归一化到目标图像的值域"""
+        recon_mean = recon.mean(dim=[1, 2, 3], keepdim=True)
+        recon_std = recon.std(dim=[1, 2, 3], keepdim=True) + 1e-8
+        img_mean = target.mean(dim=[1, 2, 3], keepdim=True)
+        img_std = target.std(dim=[1, 2, 3], keepdim=True) + 1e-8
+
+        recon = (recon - recon_mean) / recon_std
+        recon = recon * img_std + img_mean
+        return recon
     
     @torch.no_grad()
     def generate(

@@ -91,6 +91,7 @@ if __name__ == '__main__':
     parser.add_argument('--gpu', type=int, default=0, help='gpu')
     parser.add_argument('--use_multi_gpu', action='store_true', help='use multiple gpus', default=False)
     parser.add_argument('--devices', type=str, default='0,1,2,3', help='device ids of multile gpus')
+    parser.add_argument('--test_freq', type=int, default=1, help='test every N epochs (0=only final test)')
 
     # de-stationary projector params
     parser.add_argument('--p_hidden_dims', type=int, nargs='+', default=[128, 128],
@@ -207,8 +208,11 @@ if __name__ == '__main__':
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
 
-            print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            exp.test(setting)
+            if args.test_freq == 0:
+                pass
+            elif args.test_freq == 1 or (ii + 1) % args.test_freq == 0:
+                print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+                exp.test(setting)
             torch.cuda.empty_cache()
     else:
         ii = 0

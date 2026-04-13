@@ -247,13 +247,13 @@ class VisionTSRAR(nn.Module):
         # ========== 第3步: Render & Alignment（渲染与对齐）==========
         # 与 VisionTS 完全一致
         x_resize = self.input_resize(x_2d)
-        # 构造右侧掩码区域（全零，代表需要RAR生成的预测部分）
-        masked = torch.zeros(
-            (x_2d.shape[0], 1, self.image_size, self.num_patch_output * self.patch_size),
-            device=x_2d.device, dtype=x_2d.dtype,
-        )
-        # 拼接输入+掩码，形成完整224×224图像
-        x_concat_with_masked = torch.cat([x_resize, masked], dim=-1)
+        # 构造右侧掩码区域（真实future，teacher forcing训练目标）
+        # 从原始2D数据中提取future部分，resize到目标尺寸
+        future_2d = x_2d[:, :, :, -self.num_patch_output * self.patch_size:]
+        future_resized = self.input_resize(future_2d)
+        # 拼接输入+真实future，形成完整224×224图像
+        # 注意：训练时用真实future作为目标（teacher forcing），推理时才会用zeros
+        x_concat_with_masked = torch.cat([x_resize, future_resized], dim=-1)
         # 灰度图复制为3通道（Channel Independent，3通道相同）
         image_input = einops.repeat(x_concat_with_masked, 'b 1 h w -> b c h w', c=3)
 
@@ -568,12 +568,10 @@ class VisionTSRARpp(nn.Module):
                 ),
             ], dim=2)
         
-        # 3d. 构造右侧掩码区域
-        masked = torch.zeros(
-            (x_2d.shape[0], 1, self.image_size, self.num_patch_output * self.patch_size),
-            device=x_2d.device, dtype=x_2d.dtype,
-        )
-        x_concat_with_masked = torch.cat([x_resize, masked], dim=-1)
+        # 3d. 构造右侧掩码区域（真实future，teacher forcing训练目标）
+        future_2d = x_2d[:, :, :, -self.num_patch_output * self.patch_size:]
+        future_resized = self.input_resize(future_2d)
+        x_concat_with_masked = torch.cat([x_resize, future_resized], dim=-1)
         
         # 3e. 颜色编码
         if not self.color:

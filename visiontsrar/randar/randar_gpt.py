@@ -148,11 +148,9 @@ class Attention(nn.Module):
 
         xq, xk, xv = map(lambda x: x.transpose(1, 2), (xq, xk, xv))
 
-        if self.kv_cache is not None:
+        if self.kv_cache is not None and input_pos is not None:
             keys, values = self.kv_cache.update(input_pos, xk, xv)
-            
-            # RandAR 修改：截取到当前最大位置，而非返回整个缓存
-            # 这样可以避免无效位置参与注意力计算
+
             max_pos = torch.max(input_pos) + 1
             keys = keys[:, :, :max_pos]
             values = values[:, :, :max_pos]

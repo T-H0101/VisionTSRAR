@@ -143,6 +143,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         self.model.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(tqdm(vali_loader, desc='vali')):
+                # fast_eval_batches: 只验证指定数量的batch，用于快速验证评估逻辑
+                if self.args.fast_eval_batches > 0 and i >= self.args.fast_eval_batches:
+                    print(f"\n[fast_eval_batches] 已验证 {self.args.fast_eval_batches} 个batch，停止验证")
+                    break
+
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float()
 
@@ -222,6 +227,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             epoch_time = time.time()
             pbar = tqdm(train_loader)
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(pbar):
+                # fast_train_batches: 只训练指定数量的batch，用于快速验证代码逻辑
+                if self.args.fast_train_batches > 0 and i >= self.args.fast_train_batches:
+                    print(f"\n[fast_train_batches] 已训练 {self.args.fast_train_batches} 个batch，停止训练")
+                    break
+
                 iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
@@ -285,14 +295,19 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
-            vali_loss = self.vali(vali_data, vali_loader, criterion)
 
-            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss))
-            early_stopping(vali_loss, self.model, path)
-            if early_stopping.early_stop:
-                print("Early stopping")
-                break
+            # skip_validation: 跳过验证阶段，用于快速训练测试
+            if self.args.skip_validation:
+                print(f"[skip_validation] 跳过验证阶段")
+                vali_loss = float('inf')  # 用一个很大的值避免early_stopping
+            else:
+                vali_loss = self.vali(vali_data, vali_loader, criterion)
+                print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
+                    epoch + 1, train_steps, train_loss, vali_loss))
+                early_stopping(vali_loss, self.model, path)
+                if early_stopping.early_stop:
+                    print("Early stopping")
+                    break
 
             if self.args.lradj != 'fixed':
                 adjust_learning_rate(model_optim, epoch + 1, self.args)
@@ -343,6 +358,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         self.model.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(tqdm(test_loader, desc='test')):
+                # fast_eval_batches: 只测试指定数量的batch，用于快速验证评估逻辑
+                if self.args.fast_eval_batches > 0 and i >= self.args.fast_eval_batches:
+                    print(f"\n[fast_eval_batches] 已测试 {self.args.fast_eval_batches} 个batch，停止测试")
+                    break
+
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
 

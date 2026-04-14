@@ -1,50 +1,0 @@
-Args in experiment:
-[1mBasic Config[0m
-  Task Name:          long_term_forecast  Is Training:        1                   
-  Model ID:           ETTh1_96_96         Model:              VisionTSRAR         
-
-[1mData Loader[0m
-  Data:               ETTh1               Root Path:          ./dataset/ETT-small/
-  Data Path:          ETTh1.csv           Features:           M                   
-  Target:             OT                  Freq:               h                   
-  Checkpoints:        ./checkpoints/      
-
-[1mForecasting Task[0m
-  Seq Len:            96                  Label Len:          48                  
-  Pred Len:           96                  Seasonal Patterns:  Monthly             
-  Inverse:            0                   
-
-[1mModel Parameters[0m
-  Top k:              5                   Num Kernels:        6                   
-  Enc In:             7                   Dec In:             7                   
-  C Out:              7                   d model:            512                 
-  n heads:            8                   e layers:           2                   
-  d layers:           1                   d FF:               2048                
-  Moving Avg:         25                  Factor:             1                   
-  Distil:             1                   Dropout:            0.1                 
-  Embed:              timeF               Activation:         gelu                
-  Output Attention:   0                   
-
-[1mRun Parameters[0m
-  Num Workers:        0                   Itr:                1                   
-  Train Epochs:       1                   Batch Size:         8                   
-  Patience:           3                   Learning Rate:      0.001               
-  Des:                Exp                 Loss:               MSE                 
-  Lradj:              type1               Use Amp:            0                   
-
-[1mGPU[0m
-  Use GPU:            0                   GPU:                0                   
-  Use Multi GPU:      0                   Devices:            cpu                 
-
-[1mDe-stationary Projector Params[0m
-  P Hidden Dims:      128, 128            P Hidden Layers:    2                   
-
-Use CPU
-VQ Tokenizer checkpoint loaded from: ./ckpt/vq_ds16_c2i.pt
-RAR GPT checkpoint loaded from: ./ckpt/randar_0.3b_llamagen_360k_bs_1024_lr_0.0004.safetensors
->>>>>>>start training : long_term_forecast_ETTh1_96_96_VisionTSRAR_ETTh1_ftM_sl96_ll48_pl96_dm512_nh8_el2_dl1_df2048_fc1_ebtimeF_dtTrue_Exp_0>>>>>>>>>>>>>>>>>>>>>>>>>>
-train 8449
-val 2785
-test 2785
-  0%|          | 0/1056 [00:00<?, ?it/s]epoch: 1 | loss: 2.2141843:   0%|          | 0/1056 [01:24<?, ?it/s]epoch: 1 | loss: 2.2141843:   0%|          | 1/1056 [02:15<39:41:42, 135.45s/it]epoch: 1 | loss: 2.1433113:   0%|          | 1/1056 [03:42<39:41:42, 135.45s/it]epoch: 1 | loss: 2.1433113:   0%|          | 2/1056 [04:32<39:58:08, 136.52s/it]epoch: 1 | loss: 2.0970092:   0%|          | 2/1056 [06:01<39:58:08, 136.52s/it]epoch: 1 | loss: 2.0970092:   0%|          | 3/1056 [06:51<40:11:37, 137.41s/it]epoch: 1 | loss: 2.0120914:   0%|          | 3/1056 [08:19<40:11:37, 137.41s/it]epoch: 1 | loss: 2.0120914:   0%|          | 4/1056 [09:08<40:08:37, 137.37s/it]/opt/miniconda3/envs/1d_tokenizer/lib/python3.10/multiprocessing/resource_tracker.py:224: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
-  warnings.warn('resource_tracker: There appear to be %d '

@@ -153,6 +153,16 @@ if __name__ == '__main__':
     parser.add_argument('--cfg_scales', type=str, default='1.0,1.0',
                         help='RAR生成的CFG scales（起始,结束），如"1.0,1.0"')
 
+    # 快速测试参数（smoke test）
+    # 用于快速验证代码是否能跑通，不用跑完整个数据集
+    parser.add_argument('--fast_train_batches', type=int, default=0,
+                        help='限制训练batch数量；0表示使用完整训练集；设为N则只训练N个batch后停止。用于快速验证代码逻辑')
+    parser.add_argument('--fast_eval_batches', type=int, default=0,
+                        help='限制验证/测试batch数量；0表示使用完整数据集；设为N则只验证/测试N个batch。用于快速验证评估逻辑')
+    parser.add_argument('--skip_validation', type=int, default=0,
+                        help='是否跳过验证阶段（0=不跳过，1=跳过）；跳过可加速训练，但无法早停和保存最优模型')
+    parser.add_argument('--skip_test', type=int, default=0,
+                        help='是否跳过测试阶段（0=不跳过，1=跳过）；用于仅训练场景下的快速迭代')
 
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
@@ -208,7 +218,9 @@ if __name__ == '__main__':
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
 
-            if args.test_freq == 0:
+            if args.skip_test:
+                print('[skip_test] 跳过测试阶段')
+            elif args.test_freq == 0:
                 pass
             elif args.test_freq == 1 or (ii + 1) % args.test_freq == 0:
                 print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))

@@ -140,16 +140,14 @@ nohup python3 run.py \
   --freq h \
   --periodicity 24 \
   --rar_arch rar_l_0.3b \
-  --train_epochs 20 \
+  --train_epochs 3 \
   --batch_size 1 \
   --learning_rate 0.0001 \
   --use_gpu True \
   --gpu 0 \
   --ft_type In \
-  --interpolation bilinear \
-  --norm_const 0.4 \
-  --align_const 0.4 \
-  > training_etth1.log 2>&1 &
+  --test_freq 0 \
+  > training_etth1_96_96.log 2>&1 &
 ```
 
 ### 5.2 ETTh2 数据集 (96→96)

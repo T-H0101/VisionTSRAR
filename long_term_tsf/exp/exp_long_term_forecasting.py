@@ -131,11 +131,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
     def vali(self, vali_data, vali_loader, criterion):
         """
         验证过程：在验证集上计算损失，用于早停判断
-        
+
         Args:
             vali_data: 验证数据集
             vali_loader: 验证数据加载器
-            criterion: 损失函数
+            criterion: 损失函数（MSE）
         Returns:
             平均验证损失
         """
@@ -149,26 +149,26 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
 
-                # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
-                # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        outputs, _ = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
-                    outputs, _ = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
 
-                pred = outputs.detach().cpu()
-                true = batch_y.detach().cpu()
+                if model_loss is not None:
+                    loss = model_loss
+                else:
+                    pred = outputs.detach().cpu()
+                    true = batch_y.detach().cpu()
+                    loss = criterion(pred, true)
 
-                # 使用 MSE loss 计算时序预测误差
-                loss = criterion(pred, true)
-
-                total_loss.append(loss)
+                total_loss.append(loss.item() if isinstance(loss, torch.Tensor) else loss)
         total_loss = np.average(total_loss)
         self.model.train()
         return total_loss
@@ -242,42 +242,29 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                        
-                        # 混合 Loss：MSE（主要）+ 交叉熵（正则化）
-                        mse_loss = criterion(outputs, batch_y)
-                        
-                        # 如果 model_loss 不为 None（RAR 的交叉熵），加入混合 Loss
+
                         if model_loss is not None:
-                            # CE weight = 0.001（轻微正则化，防止 VQ 退化）
-                            ce_weight = 0.001
-                            loss = mse_loss + ce_weight * model_loss
-                            if (i + 1) % 100 == 0:
-                                print(f"[Loss] MSE: {mse_loss.item():.6f}, CE: {model_loss.item():.6f}, Total: {loss.item():.6f}")
+                            loss = model_loss
                         else:
-                            loss = mse_loss
-                        
-                        train_loss.append(loss.item())
+                            loss = criterion(outputs, batch_y)
+
+                        train_loss.append(loss.item() if isinstance(loss, torch.Tensor) else loss)
                 else:
                     outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                     f_dim = -1 if self.args.features == 'MS' else 0
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                    
-                    # 混合 Loss：MSE（主要）+ 交叉熵（正则化）
-                    mse_loss = criterion(outputs, batch_y)
-                    
-                    # 如果 model_loss 不为 None（RAR 的交叉熵），加入混合 Loss
+
                     if model_loss is not None:
-                        # CE weight = 0.001（轻微正则化，防止 VQ 退化）
-                        ce_weight = 0.001
-                        loss = mse_loss + ce_weight * model_loss
+                        loss = model_loss
                         if (i + 1) % 100 == 0:
-                            print(f"[Loss] MSE: {mse_loss.item():.6f}, CE: {model_loss.item():.6f}, Total: {loss.item():.6f}")
+                            tqdm.write(f"[Loss] MAE+MSE: {loss.item():.6f}")
                     else:
-                        loss = mse_loss
-                    
-                    train_loss.append(loss.item())
+                        pred = outputs
+                        loss = criterion(pred, batch_y)
+
+                    train_loss.append(loss.item() if isinstance(loss, torch.Tensor) else loss)
 
                 pbar.set_description("epoch: {0} | loss: {1:.7f}".format(epoch + 1, loss.item()))
                 if (i + 1) % 100 == 0:
@@ -307,7 +294,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 print("Early stopping")
                 break
 
-            adjust_learning_rate(model_optim, epoch + 1, self.args)
+            if self.args.lradj != 'fixed':
+                adjust_learning_rate(model_optim, epoch + 1, self.args)
 
         best_model_path = path + '/' + 'checkpoint.pth'
         if os.path.isfile(best_model_path):

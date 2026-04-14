@@ -298,15 +298,65 @@ class RARWrapper(nn.Module):
     
     def _apply_finetune_strategy(self, finetune_type: str):
         """
-        根据微调策略冻结 RAR GPT 参数
+        根据微调策略冻结 RAR GPT 和 VQ Tokenizer 参数
 
         与 VisionTS 的策略一致：
         - 'ln': 仅 RMSNorm 参数可训练（对应 VisionTS 的 'ln' 即仅 LayerNorm）
         - 'bias': 仅偏置参数可训练
         - 'none': 冻结所有参数（零样本推理）
         - 'full': 所有参数可训练
-        - 'In': Inpainting 模式，冻结所有参数（只训练 VQ Tokenizer）
+        - 'In': Inpainting 模式，冻结 RAR GPT，训练 VQ Decoder
+        - 'In_light': 轻量级 Inpainting 模式，冻结 RAR GPT 和 VQ Decoder，只训练 post_quant_conv
         """
+        aliases = {
+            'in': 'In',
+            'inlight': 'In_light',
+            'in_light': 'In_light',
+            'in-light': 'In_light',
+            'none': 'none',
+            'full': 'full',
+            'ln': 'ln',
+            'bias': 'bias',
+        }
+        normalized_ft_type = aliases.get(finetune_type, finetune_type)
+        valid_prefixes = ('mlp', 'attn')
+        valid_types = {'full', 'ln', 'bias', 'none', 'In', 'In_light'}
+        if normalized_ft_type not in valid_types and not normalized_ft_type.startswith(valid_prefixes):
+            raise ValueError(
+                f"Unknown finetune_type: {finetune_type}. "
+                f"Supported values: {sorted(valid_types)} plus prefixes {valid_prefixes}."
+            )
+        finetune_type = normalized_ft_type
+
+        # ============================================================
+        # 1. 处理 VQ Tokenizer 的冻结策略
+        # ============================================================
+        if finetune_type == 'In_light':
+            # 轻量级模式：只训练 post_quant_conv，其他全部冻结
+            for name, param in self.vq_tokenizer.named_parameters():
+                if 'post_quant_conv' in name.lower():
+                    param.requires_grad = True
+                    print(f"VQ: {name} - 可训练")
+                else:
+                    param.requires_grad = False
+            self.vq_tokenizer.eval()  # 保持 eval 模式，但 post_quant_conv 会有梯度
+        elif finetune_type == 'In':
+            # 原始 In 模式：训练 VQ Decoder
+            for name, param in self.vq_tokenizer.named_parameters():
+                if 'encoder' in name.lower() or 'quantize' in name.lower():
+                    param.requires_grad = False
+                else:
+                    param.requires_grad = True
+            self.vq_tokenizer.eval()
+        else:
+            # 其他模式：冻结整个 VQ Tokenizer
+            for param in self.vq_tokenizer.parameters():
+                param.requires_grad = False
+            self.vq_tokenizer.eval()
+        
+        # ============================================================
+        # 2. 处理 RAR GPT 的冻结策略
+        # ============================================================
         if finetune_type == 'full':
             return  # 不冻结任何参数
 
@@ -315,7 +365,7 @@ class RARWrapper(nn.Module):
                 param.requires_grad = 'norm' in n.lower()
             elif finetune_type == 'bias':
                 param.requires_grad = 'bias' in n
-            elif finetune_type in ('none', 'In'):
+            elif finetune_type in ('none', 'In', 'In_light'):
                 param.requires_grad = False
             elif 'mlp' in finetune_type:
                 param.requires_grad = '.feed_forward.' in n or 'ffn' in n.lower()

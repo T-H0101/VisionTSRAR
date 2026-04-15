@@ -521,11 +521,17 @@ class RARWrapper(nn.Module):
         3. VQ decode
         4. 计算 MAE/MSE loss（历史 + 未来）
         """
+        def _mem():
+            if torch.cuda.is_available():
+                return torch.cuda.memory_allocated() / 1024**3
+            return 0
+
         bs = all_tokens.shape[0]
 
         # -------------------------------------------------
         # Step 1: 准备 visible tokens 和条件
         # -------------------------------------------------
+        print(f"[MEM] _forward_train 开始: {_mem():.2f}GB")
         visible_tokens = all_tokens[:, :num_visible_tokens]
         cond_idx = torch.zeros(bs, dtype=torch.long, device=all_tokens.device)
 
@@ -536,6 +542,7 @@ class RARWrapper(nn.Module):
         # - 通过 transformer
         # - 输出 logits
         # -------------------------------------------------
+        print(f"[MEM] VQ Encode 完成，准备 RAR GPT: {_mem():.2f}GB")
         with torch.no_grad():
             token_logits, _, token_order = self.rar_gpt(
                 idx=all_tokens,
@@ -544,6 +551,7 @@ class RARWrapper(nn.Module):
                 targets=all_tokens,
                 visible_tokens=visible_tokens,
             )
+        print(f"[MEM] RAR GPT forward 完成: {_mem():.2f}GB")
 
         # -------------------------------------------------
         # Step 3: 从 logits 获取预测 tokens（STE）
@@ -554,6 +562,7 @@ class RARWrapper(nn.Module):
         # Step 4: VQ decode 预测的 tokens
         # -------------------------------------------------
         recon_image = self.decode_tokens(predicted_tokens, image_size=vq_input_size)
+        print(f"[MEM] VQ Decode 完成: {_mem():.2f}GB")
 
         # -------------------------------------------------
         # Step 5: 恢复到原始图像尺寸

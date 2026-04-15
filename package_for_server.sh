@@ -8,7 +8,7 @@ echo "打包 VisionTSRAR 用于服务器部署"
 echo "========================================="
 
 PROJECT_NAME="VisionTSRAR"
-ZIP_FILE="${PROJECT_NAME}_deploy.zip"
+ZIP_FILE="${PROJECT_NAME}.zip"
 
 # 获取当前目录
 CURRENT_DIR=$(pwd)

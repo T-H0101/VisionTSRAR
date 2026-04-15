@@ -15,6 +15,14 @@ from tqdm import tqdm
 warnings.filterwarnings('ignore')
 
 
+def _print_mem(prefix, device):
+    """打印当前显存使用情况"""
+    if device.type == 'cuda':
+        allocated = torch.cuda.memory_allocated(device) / 1024**3
+        reserved = torch.cuda.memory_reserved(device) / 1024**3
+        print(f"[MEM {prefix}] allocated={allocated:.2f}GB, reserved={reserved:.2f}GB")
+
+
 class Exp_Long_Term_Forecast(Exp_Basic):
     """
     长期时序预测实验类
@@ -234,11 +242,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 iter_count += 1
                 model_optim.zero_grad()
+                
+                # ====== 显存监控点1: 数据加载到GPU ======
                 batch_x = batch_x.float().to(self.device)
-
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
+                _print_mem("数据加载完成", self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
@@ -247,7 +257,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
+                        # ====== 显存监控点2: forward前 ======
+                        _print_mem("forward前", self.device)
                         outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        # ====== 显存监控点3: forward后 ======
+                        _print_mem("forward后", self.device)
 
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -261,6 +275,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         train_loss.append(loss.item() if isinstance(loss, torch.Tensor) else loss)
                 else:
                     outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    _print_mem("forward后(无AMP)", self.device)
 
                     f_dim = -1 if self.args.features == 'MS' else 0
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -285,12 +300,18 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     iter_count = 0
                     time_now = time.time()
 
+                # ====== 显存监控点4: backward前 ======
+                _print_mem("backward前", self.device)
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
+                    # ====== 显存监控点5: backward后 ======
+                    _print_mem("backward后(AMP)", self.device)
                     scaler.step(model_optim)
                     scaler.update()
                 else:
                     loss.backward()
+                    # ====== 显存监控点5: backward后 ======
+                    _print_mem("backward后", self.device)
                     model_optim.step()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))

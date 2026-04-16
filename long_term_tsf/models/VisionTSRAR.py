@@ -65,6 +65,8 @@ class Model(nn.Module):
             rar_ckpt=getattr(config, 'rar_ckpt', None),
             num_inference_steps=getattr(config, 'num_inference_steps', 88),
             position_order=getattr(config, 'position_order', 'random'),
+            use_lightweight_decoder=getattr(config, 'use_lightweight_decoder', False),
+            lightweight_decoder_channels=getattr(config, 'lightweight_decoder_channels', 64),
         )
 
         # 保存RAR采样参数

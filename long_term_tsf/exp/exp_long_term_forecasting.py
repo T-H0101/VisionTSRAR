@@ -164,11 +164,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
-                if self.args.use_amp:
-                    with torch.cuda.amp.autocast():
-                        outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-                else:
-                    outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                
+                # 验证阶段不使用AMP，避免KVCache数据类型不匹配
+                # 因为RAR GPT的generate方法需要KVCache，而KVCache在初始化时是Float精度
+                outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -248,7 +247,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
-                _print_mem("数据加载完成", self.device)
+                # _print_mem("数据加载完成", self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
@@ -258,10 +257,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
                         # ====== 显存监控点2: forward前 ======
-                        _print_mem("forward前", self.device)
+                        # _print_mem("forward前", self.device)
                         outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                         # ====== 显存监控点3: forward后 ======
-                        _print_mem("forward后", self.device)
+                        # _print_mem("forward后", self.device)
 
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -275,7 +274,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         train_loss.append(loss.item() if isinstance(loss, torch.Tensor) else loss)
                 else:
                     outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-                    _print_mem("forward后(无AMP)", self.device)
+                    # _print_mem("forward后(无AMP)", self.device)
 
                     f_dim = -1 if self.args.features == 'MS' else 0
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -301,17 +300,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     time_now = time.time()
 
                 # ====== 显存监控点4: backward前 ======
-                _print_mem("backward前", self.device)
+                # _print_mem("backward前", self.device)
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
                     # ====== 显存监控点5: backward后 ======
-                    _print_mem("backward后(AMP)", self.device)
+                    # _print_mem("backward后(AMP)", self.device)
                     scaler.step(model_optim)
                     scaler.update()
                 else:
                     loss.backward()
                     # ====== 显存监控点5: backward后 ======
-                    _print_mem("backward后", self.device)
+                    # _print_mem("backward后", self.device)
                     model_optim.step()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
@@ -394,11 +393,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder（VisionTSRAR在eval模式下使用generate）
-                if self.args.use_amp:
-                    with torch.cuda.amp.autocast():
-                        outputs, _ = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-                else:
-                    outputs, _ = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                # 测试阶段不使用AMP，避免KVCache数据类型不匹配
+                outputs, _ = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, :]

@@ -152,6 +152,10 @@ if __name__ == '__main__':
                         help='RAR采样的top-p值（1.0=不使用）')
     parser.add_argument('--cfg_scales', type=str, default='1.0,1.0',
                         help='RAR生成的CFG scales（起始,结束），如"1.0,1.0"')
+    parser.add_argument('--use_lightweight_decoder', action='store_true', default=False,
+                        help='使用轻量级Decoder替代原VQ Decoder，可降低显存占用')
+    parser.add_argument('--lightweight_decoder_channels', type=int, default=64,
+                        help='轻量级Decoder的base_channels（默认64，越大Decoder越强但越慢）')
 
     # 快速测试参数（smoke test）
     # 用于快速验证代码是否能跑通，不用跑完整个数据集

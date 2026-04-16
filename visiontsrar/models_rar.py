@@ -30,6 +30,7 @@ from .randar.utils import (
     interleave_tokens,
     calculate_num_query_tokens_for_parallel_decoding,
 )
+from .randar.lightweight_decoder import LightweightDecoder
 from .randar.llamagen_gpt import (
     LabelEmbedder,
     precompute_freqs_cis_2d,
@@ -154,6 +155,8 @@ class RARWrapper(nn.Module):
         device: str = 'auto',
         vq_ckpt_path: str = None,
         rar_ckpt_path: str = None,
+        use_lightweight_decoder: bool = False,
+        lightweight_decoder_channels: int = 64,
     ):
         """
         初始化 RAR 封装层
@@ -174,6 +177,8 @@ class RARWrapper(nn.Module):
             device: 计算设备，'auto' 自动选择 CUDA > MPS > CPU
             vq_ckpt_path: VQ Tokenizer权重文件的完整路径（None则从HuggingFace自动下载）
             rar_ckpt_path: RAR GPT权重文件的完整路径（None则从HuggingFace自动下载）
+            use_lightweight_decoder: 是否使用轻量级 Decoder（替换原 VQ Decoder）
+            lightweight_decoder_channels: 轻量 Decoder 的 base_channels
         """
         super().__init__()
         
@@ -184,6 +189,8 @@ class RARWrapper(nn.Module):
         self.finetune_type = finetune_type
         self.num_inference_steps = num_inference_steps
         self.position_order = position_order
+        self.use_lightweight_decoder = use_lightweight_decoder
+        self.lightweight_decoder_channels = lightweight_decoder_channels
         
         # 自动选择设备
         if device == 'auto':
@@ -219,6 +226,10 @@ class RARWrapper(nn.Module):
             else:
                 param.requires_grad = True
         self.vq_tokenizer.eval()
+
+        # 如果使用轻量级 Decoder，替换原 VQ Decoder
+        if self.use_lightweight_decoder:
+            self._setup_lightweight_decoder()
         
         # ============================================================
         # 2. 初始化 RandAR GPT（可微调部分参数）
@@ -269,7 +280,33 @@ class RARWrapper(nn.Module):
         except Exception as e:
             print(f"Failed to load VQ Tokenizer checkpoint: {e}")
             print(f"VQ Tokenizer will use random initialization.")
-    
+
+    def _setup_lightweight_decoder(self):
+        """
+        设置轻量级 Decoder 替换原 VQ Decoder
+
+        轻量 Decoder 会作为 vq_tokenizer.decoder 替换原 Decoder，
+        并且默认解冻参与训练，实现端到端优化。
+        """
+        print(f"Setting up lightweight decoder (base_channels={self.lightweight_decoder_channels})...")
+        self.lightweight_decoder = LightweightDecoder(
+            z_channels=256,
+            base_channels=self.lightweight_decoder_channels,
+            ch_mult=[1, 2, 4],
+            num_res_blocks=2,
+            norm_type='group',
+            dropout=0.0,
+            out_channels=3,
+            use_attn_last_only=True,
+            use_depthwise=False,
+        )
+        self.vq_tokenizer.decoder = self.lightweight_decoder
+        for param in self.lightweight_decoder.parameters():
+            param.requires_grad = True
+        self.lightweight_decoder.train()
+        total_params = sum(p.numel() for p in self.lightweight_decoder.parameters())
+        print(f"Lightweight decoder parameters: {total_params:,}")
+
     def _load_rar_ckpt(self, ckpt_path: str):
         """加载 RAR GPT 预训练权重（支持 safetensors 格式）"""
         try:
@@ -406,16 +443,29 @@ class RARWrapper(nn.Module):
         Returns:
             reconstructed_image: [bs, 3, H, W] 重建图像，值域 [-1, 1]
         """
+        def _mem():
+            if torch.cuda.is_available():
+                return torch.cuda.memory_allocated() / 1024**3
+            return 0
+        
+        # print(f"[decode_tokens] 开始: {_mem():.2f}GB")
         spatial_size = int(token_indices.shape[1] ** 0.5)
+        # print(f"[decode_tokens] spatial_size={spatial_size}, token_indices shape={token_indices.shape}")
         codes = token_indices.view(token_indices.shape[0], spatial_size, spatial_size)
+        # print(f"[decode_tokens] codes shape={codes.shape}")
         qz_shape = (
             token_indices.shape[0],
             self.vq_tokenizer.codebook_embed_dim,
             spatial_size,
             spatial_size
         )
+        # print(f"[decode_tokens] qz_shape={qz_shape}")
         quant = self.vq_tokenizer.quantize.get_codebook_entry(codes, qz_shape, channel_first=True)
+        # print(f"[decode_tokens] quant shape={quant.shape}, 预计显存={quant.numel() * 4 / 1024**3:.2f}GB")
+        # print(f"[decode_tokens] quant之后: {_mem():.2f}GB")
+        # print(f"[decode_tokens] vq_tokenizer.decoder type: {type(self.vq_tokenizer.decoder)}")
         reconstructed_image = self.vq_tokenizer.decode(quant)
+        # print(f"[decode_tokens] decode之后: {_mem():.2f}GB, recon shape={reconstructed_image.shape}")
         if reconstructed_image.shape[-1] != image_size:
             reconstructed_image = F.interpolate(
                 reconstructed_image, size=(image_size, image_size), mode="bicubic"
@@ -531,7 +581,7 @@ class RARWrapper(nn.Module):
         # -------------------------------------------------
         # Step 1: 准备 visible tokens 和条件
         # -------------------------------------------------
-        print(f"[MEM] _forward_train 开始: {_mem():.2f}GB")
+        # print(f"[MEM] _forward_train 开始: {_mem():.2f}GB")
         visible_tokens = all_tokens[:, :num_visible_tokens]
         cond_idx = torch.zeros(bs, dtype=torch.long, device=all_tokens.device)
 
@@ -542,7 +592,7 @@ class RARWrapper(nn.Module):
         # - 通过 transformer
         # - 输出 logits
         # -------------------------------------------------
-        print(f"[MEM] VQ Encode 完成，准备 RAR GPT: {_mem():.2f}GB")
+        # print(f"[MEM] VQ Encode 完成，准备 RAR GPT: {_mem():.2f}GB")
         with torch.no_grad():
             token_logits, _, token_order = self.rar_gpt(
                 idx=all_tokens,
@@ -551,18 +601,19 @@ class RARWrapper(nn.Module):
                 targets=all_tokens,
                 visible_tokens=visible_tokens,
             )
-        print(f"[MEM] RAR GPT forward 完成: {_mem():.2f}GB")
+        # print(f"[MEM] RAR GPT forward 完成: {_mem():.2f}GB")
 
         # -------------------------------------------------
-        # Step 3: 从 logits 获取预测 tokens（STE）
+        # Step 3: 从 logits 获取预测 tokens（使用STE保持梯度）
+        # 注意：不能用 argmax，因为它会断开梯度
         # -------------------------------------------------
-        predicted_tokens = torch.argmax(token_logits, dim=-1)
+        predicted_tokens = StraightThroughEstimator.apply(token_logits)
 
         # -------------------------------------------------
         # Step 4: VQ decode 预测的 tokens
         # -------------------------------------------------
         recon_image = self.decode_tokens(predicted_tokens, image_size=vq_input_size)
-        print(f"[MEM] VQ Decode 完成: {_mem():.2f}GB")
+        # print(f"[MEM] VQ Decode 完成: {_mem():.2f}GB")
 
         # -------------------------------------------------
         # Step 5: 恢复到原始图像尺寸

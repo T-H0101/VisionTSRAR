@@ -69,6 +69,8 @@ class VisionTSRAR(nn.Module):
         position_order: str = 'random',
         vq_ckpt: str = None,
         rar_ckpt: str = None,
+        use_lightweight_decoder: bool = False,
+        lightweight_decoder_channels: int = 64,
     ):
         """
         初始化 VisionTSRAR 模型
@@ -88,11 +90,16 @@ class VisionTSRAR(nn.Module):
                 - 'raster': 光栅顺序（推理时使用，保持空间连续性）
             vq_ckpt: VQ Tokenizer权重文件路径（None则自动下载）
             rar_ckpt: RAR GPT权重文件路径（None则自动下载）
+            use_lightweight_decoder: 是否使用轻量级 Decoder（替换原 VQ Decoder，降低显存）
+            lightweight_decoder_channels: 轻量 Decoder 的 base_channels（默认64，值越大Decoder越强）
         """
         super(VisionTSRAR, self).__init__()
 
         if arch not in RAR_ARCH:
             raise ValueError(f"Unknown arch: {arch}. Should be in {list(RAR_ARCH.keys())}")
+
+        self.use_lightweight_decoder = use_lightweight_decoder
+        self.lightweight_decoder_channels = lightweight_decoder_channels
 
         # 创建 RAR 封装层（VQ Tokenizer + RandAR GPT）
         self.rar_wrapper = RAR_ARCH[arch]["factory"](
@@ -104,6 +111,8 @@ class VisionTSRAR(nn.Module):
             position_order=position_order,
             vq_ckpt_path=vq_ckpt,
             rar_ckpt_path=rar_ckpt,
+            use_lightweight_decoder=use_lightweight_decoder,
+            lightweight_decoder_channels=lightweight_decoder_channels,
         )
         
         # 保存配置

@@ -794,6 +794,7 @@ class RandARTransformer(nn.Module):
         top_k: int = 0,
         top_p: float = 1.0,
         visible_tokens: Optional[torch.Tensor] = None,
+        max_new_tokens: Optional[int] = None,
     ):
         """
         RandAR 并行解码生成函数。
@@ -821,6 +822,12 @@ class RandARTransformer(nn.Module):
         - 生成的 result_indices 前 num_visible 个位置直接用 visible_tokens 填充
         - 这支持了"给定左半部分图像，生成右半部分"的时序预测场景
         
+        【VisionTSRAR 新增】限制生成长度：
+        当 max_new_tokens 不为 None 时，限制生成的 token 数量。
+        - 只生成 max_new_tokens 个新 token（不包括 visible_tokens）
+        - 剩余位置用 0 填充（后续在 _forward_train 中用 GT 填充）
+        - 用于训练时降低显存消耗
+        
         Args:
             cond: [bsz, cls_token_num] 条件 token 索引
             token_order: [bsz, block_size] 每个 token 的位置顺序
@@ -830,6 +837,7 @@ class RandARTransformer(nn.Module):
             top_k: Top-k 采样的 k 值
             top_p: Top-p 采样的 p 值
             visible_tokens: [bsz, num_visible] 已知 token 索引（inpainting 模式）
+            max_new_tokens: 最多生成的新 token 数量（None 表示生成全部）
         
         Returns:
             result_indices: [bsz, block_size] 生成的 token 索引（光栅顺序）
@@ -856,6 +864,12 @@ class RandARTransformer(nn.Module):
             num_visible = visible_tokens.shape[1]
             # 将已知 token 直接填入结果序列的前 num_visible 个位置
             result_indices[:, :num_visible] = visible_tokens
+        
+        # ===== 【VisionTSRAR 新增】计算目标生成长度 =====
+        target_generated_tokens = self.block_size  # 默认生成全部
+        if max_new_tokens is not None:
+            target_generated_tokens = num_visible + max_new_tokens
+            target_generated_tokens = min(target_generated_tokens, self.block_size)  # 不超过 block_size
         
         # ===== Step-2: 准备位置指令 token 和频率编码 =====
         position_instruction_tokens = self.get_position_instruction_tokens(token_order)
@@ -925,6 +939,10 @@ class RandARTransformer(nn.Module):
 
         # ===== Step 5-2: 开始生成循环 =====
         while query_token_idx_cur_step <= self.block_size - num_query_token_cur_step and query_token_idx_cur_step <= self.block_size - 1:
+            # 【VisionTSRAR 新增】检查是否已达到目标生成长度
+            if query_token_idx_cur_step >= target_generated_tokens:
+                break
+            
             # Step 5-3: 解码当前步的 token
             logits = self.forward_inference(x, cur_freqs_cis, input_pos)
 

@@ -217,7 +217,7 @@ class VisionTSRAR(nn.Module):
         # 注意：这里 num_visible_tokens 是按 256×256 (16x16 tokens) 计算的
         # 如果输入是 224×224，RARWrapper 会先上采样到 256×256
 
-    def forward(self, x, export_image=False, fp64=False):
+    def forward(self, x, export_image=False, fp64=False, current_epoch=0, use_teacher_forcing=None):
         """
         VisionTSRAR 前向传播：6步流水线
         
@@ -228,6 +228,8 @@ class VisionTSRAR(nn.Module):
             x: 回看窗口，size: [bs x context_len x nvars]
             export_image: 是否导出可视化图像
             fp64: 是否使用 float64 精度（避免数值溢出）
+            current_epoch: 当前训练epoch（用于Schedule Sampling）
+            use_teacher_forcing: 是否使用 teacher forcing（None=随机决策，True/False=外部控制）
         
         Returns:
             y: 预测窗口，size: [bs x pred_len x nvars]
@@ -271,9 +273,9 @@ class VisionTSRAR(nn.Module):
         # VisionTS: self.vision_model(image_input, mask_ratio=..., noise=...) → y, mask
         # VisionTSRAR: self.rar_wrapper(image_input, num_visible_tokens) → reconstructed_image, loss
         if self.training:
-            # 训练模式：使用 teacher forcing
+            # 训练模式：使用 teacher forcing（支持外部控制）
             image_reconstructed, rar_loss = self.rar_wrapper(
-                image_input, self.num_visible_tokens
+                image_input, self.num_visible_tokens, current_epoch=current_epoch, use_teacher_forcing=use_teacher_forcing
             )
         else:
             # 推理模式：使用自回归生成

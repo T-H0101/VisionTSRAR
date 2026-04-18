@@ -41,6 +41,15 @@ class Exp_Basic(object):
             self.model_dict['VisionTS'] = VisionTS
         self.device = self._acquire_device()
         self.model = self._build_model().to(self.device)
+        
+        # torch.compile 加速（需要PyTorch 2.0+）
+        if getattr(args, 'use_torch_compile', False):
+            try:
+                print("[torch.compile] 正在编译模型...")
+                self.model = torch.compile(self.model)
+                print("[torch.compile] 模型编译完成")
+            except Exception as e:
+                print(f"[torch.compile] 编译失败: {e}")
 
     def _build_model(self):
         raise NotImplementedError

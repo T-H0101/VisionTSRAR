@@ -93,7 +93,7 @@ class Model(nn.Module):
         except (ValueError, IndexError):
             return (1.0, 1.0)
 
-    def forecast(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None):
+    def forecast(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, current_epoch=0, use_teacher_forcing=None):
         """
         时序预测（VisionTSRAR的核心功能）
 
@@ -106,11 +106,13 @@ class Model(nn.Module):
             x_mark_enc: 时间特征（VisionTSRAR不使用）
             x_dec: 解码器输入（VisionTSRAR不使用）
             x_mark_dec: 解码器时间特征（VisionTSRAR不使用）
+            current_epoch: 当前训练epoch（用于Schedule Sampling）
+            use_teacher_forcing: 是否使用 teacher forcing（None=随机决策，True/False=外部控制）
         Returns:
             训练时: (prediction, loss) 元组
             测试时: prediction 张量
         """
-        result = self.vm.forward(x_enc)
+        result = self.vm.forward(x_enc, current_epoch=current_epoch, use_teacher_forcing=use_teacher_forcing)
         if self.training and isinstance(result, tuple):
             # 训练模式：forward 内部调用 rar_wrapper.forward()，返回 (reconstructed, loss)
             # 但实际上 VisionTSRAR.forward() 训练时只返回 y（预测值），
@@ -131,7 +133,7 @@ class Model(nn.Module):
         """分类（VisionTSRAR暂不支持）"""
         raise NotImplementedError()
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, current_epoch=0, use_teacher_forcing=None):
         """
         统一前向接口，根据任务类型分发到对应方法
 
@@ -141,11 +143,13 @@ class Model(nn.Module):
             x_dec: 解码器输入
             x_mark_dec: 解码器时间特征
             mask: 掩码（仅imputation任务使用）
+            current_epoch: 当前训练epoch（用于Schedule Sampling）
+            use_teacher_forcing: 是否使用 teacher forcing（None=随机决策，True/False=外部控制）
         Returns:
             任务对应的输出
         """
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, current_epoch=current_epoch, use_teacher_forcing=use_teacher_forcing)
             if isinstance(dec_out, tuple):
                 # 训练模式返回(prediction, loss)
                 pred, loss = dec_out

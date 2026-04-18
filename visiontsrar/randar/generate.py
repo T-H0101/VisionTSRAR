@@ -107,7 +107,18 @@ def sample(
     logits = logits[:, -1, :] / max(temperature, 1e-5)
     if top_k > 0 or top_p < 1.0:
         logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+    
+    # 数值稳定性处理：替换 NaN 和 Inf
+    logits = torch.where(torch.isnan(logits), torch.zeros_like(logits), logits)
+    logits = torch.where(torch.isinf(logits), torch.zeros_like(logits), logits)
+    
     probs = F.softmax(logits, dim=-1)
+    
+    # 确保 probs 有效（无 NaN，和为 1）
+    if torch.isnan(probs).any() or torch.isinf(probs).any():
+        # 如果 softmax 后仍有问题，使用均匀分布
+        probs = torch.ones_like(probs) / probs.shape[-1]
+    
     if sample_logits:
         # 多项式采样
         idx = torch.multinomial(probs, num_samples=1)

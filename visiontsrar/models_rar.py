@@ -378,13 +378,24 @@ class RARWrapper(nn.Module):
                     param.requires_grad = False
             self.vq_tokenizer.eval()  # 保持 eval 模式，但 post_quant_conv 会有梯度
         elif finetune_type == 'In':
-            # 原始 In 模式：训练 VQ Decoder
-            for name, param in self.vq_tokenizer.named_parameters():
-                if 'encoder' in name.lower() or 'quantize' in name.lower():
+            # Inpainting 模式：训练 Decoder
+            if self.use_lightweight_decoder:
+                # 使用轻量Decoder：冻结整个VQ Tokenizer，只训练轻量Decoder
+                for param in self.vq_tokenizer.parameters():
                     param.requires_grad = False
-                else:
+                self.vq_tokenizer.eval()
+                # 解冻轻量Decoder
+                for param in self.lightweight_decoder.parameters():
                     param.requires_grad = True
-            self.vq_tokenizer.eval()
+                print(f"[In模式] 轻量Decoder已解冻，参数量: {sum(p.numel() for p in self.lightweight_decoder.parameters()):,}")
+            else:
+                # 使用原版VQ Decoder：训练VQ Decoder
+                for name, param in self.vq_tokenizer.named_parameters():
+                    if 'encoder' in name.lower() or 'quantize' in name.lower():
+                        param.requires_grad = False
+                    else:
+                        param.requires_grad = True
+                self.vq_tokenizer.eval()
         else:
             # 其他模式：冻结整个 VQ Tokenizer
             for param in self.vq_tokenizer.parameters():
@@ -477,6 +488,8 @@ class RARWrapper(nn.Module):
         self,
         image_input: torch.Tensor,
         num_visible_tokens: int = None,
+        current_epoch: int = 0,
+        use_teacher_forcing: bool = None,  # 【优化】允许外部控制
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         训练/推理统一接口
@@ -497,6 +510,7 @@ class RARWrapper(nn.Module):
         Args:
             image_input: [bs, 3, H, W] 完整图像（训练时含真实future，推理时右半为零）
             num_visible_tokens: int, 可见区域的token数量
+            current_epoch: int, 当前训练epoch（用于Schedule Sampling）
 
         Returns:
             reconstructed_image: [bs, 3, H, W] 重建图像
@@ -526,7 +540,7 @@ class RARWrapper(nn.Module):
         if self.training:
             # 【训练模式】打乱 token 顺序 + VQ 重建 + 分开 MAE
             return self._forward_train(
-                image_resized, all_tokens, image_input, num_visible_tokens, vq_input_size
+                image_resized, all_tokens, image_input, num_visible_tokens, vq_input_size, current_epoch, use_teacher_forcing
             )
         else:
             # 【推理模式】使用 RAR GPT 生成
@@ -561,6 +575,8 @@ class RARWrapper(nn.Module):
         image_input: torch.Tensor,
         num_visible_tokens: int,
         vq_input_size: int,
+        current_epoch: int = 0,
+        use_teacher_forcing: bool = None,  # 【优化】允许外部控制
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         训练模式 forward：使用 RAR GPT 生成 + MAE/MSE loss
@@ -570,6 +586,15 @@ class RARWrapper(nn.Module):
         2. RAR GPT forward（冻结但参与，计算 token 顺序）
         3. VQ decode
         4. 计算 MAE/MSE loss（历史 + 未来）
+        
+        Schedule Sampling策略：
+        - 0~2 epoch: 100% teacher forcing
+        - 3~6 epoch: 线性下降 1.0 → 0.2
+        - 7+ epoch: 保持20%
+        
+        【优化】use_teacher_forcing 参数：
+        - None: 使用内部随机决策（向后兼容）
+        - True/False: 使用外部决策（用于训练循环控制）
         """
         def _mem():
             if torch.cuda.is_available():
@@ -577,43 +602,69 @@ class RARWrapper(nn.Module):
             return 0
 
         bs = all_tokens.shape[0]
+        total_tokens = all_tokens.shape[1]
 
         # -------------------------------------------------
-        # Step 1: 准备 visible tokens 和条件
+        # Step 1: 计算 teacher forcing ratio
+        # -------------------------------------------------
+        if current_epoch <= 2:
+            teacher_forcing_ratio = 1.0
+        elif current_epoch <= 6:
+            teacher_forcing_ratio = 1.0 - (current_epoch - 2) / 4 * 0.8
+        else:
+            teacher_forcing_ratio = 0.2
+
+        # -------------------------------------------------
+        # Step 2: 准备 visible tokens 和条件
         # -------------------------------------------------
         # print(f"[MEM] _forward_train 开始: {_mem():.2f}GB")
         visible_tokens = all_tokens[:, :num_visible_tokens]
         cond_idx = torch.zeros(bs, dtype=torch.long, device=all_tokens.device)
 
         # -------------------------------------------------
-        # Step 2: RAR GPT forward（冻结但参与）
-        # 使用 forward_train 方法，它会：
-        # - 对 tokens 进行重排（visible raster, query random）
-        # - 通过 transformer
-        # - 输出 logits
+        # Step 3: Schedule Sampling - 决定使用 teacher forcing 还是 generate
         # -------------------------------------------------
-        # print(f"[MEM] VQ Encode 完成，准备 RAR GPT: {_mem():.2f}GB")
-        with torch.no_grad():
-            token_logits, _, token_order = self.rar_gpt(
-                idx=all_tokens,
-                cond_idx=cond_idx,
-                token_order=None,
-                targets=all_tokens,
-                visible_tokens=visible_tokens,
-            )
-        # print(f"[MEM] RAR GPT forward 完成: {_mem():.2f}GB")
+        # 【优化】如果外部传入了 use_teacher_forcing，则使用外部决策
+        if use_teacher_forcing is None:
+            use_teacher_forcing = torch.rand(1).item() < teacher_forcing_ratio
 
-        # -------------------------------------------------
-        # Step 3: 从 logits 获取预测 tokens（使用STE保持梯度）
-        # 注意：不能用 argmax，因为它会断开梯度
-        # -------------------------------------------------
-        predicted_tokens = StraightThroughEstimator.apply(token_logits)
+        if use_teacher_forcing:
+            # Teacher forcing：使用 RAR GPT forward
+            with torch.no_grad():
+                token_logits, _, token_order = self.rar_gpt(
+                    idx=all_tokens,
+                    cond_idx=cond_idx,
+                    token_order=None,
+                    targets=all_tokens,
+                    visible_tokens=visible_tokens,
+                )
+            predicted_tokens = StraightThroughEstimator.apply(token_logits)
+        else:
+            # 自回归生成：使用 RAR GPT generate（平衡训练质量和显存）
+            # 【优化】生成 40% 的 query tokens，平衡训练质量和显存
+            query_len = total_tokens - num_visible_tokens
+            max_gen = int(query_len * 0.4)  # 生成 40%
+            max_gen = max(1, max_gen)  # 至少生成 1 个 token
+            
+            with torch.no_grad():
+                generated_tokens = self.rar_gpt.generate(
+                    cond=cond_idx,
+                    token_order=None,
+                    visible_tokens=visible_tokens,
+                    max_new_tokens=max_gen,  # 限制生成长度
+                    num_inference_steps=44,  # 降低推理步数（从 88 到 44，加速训练）
+                )
+            
+            # 【拼接策略】生成的部分 + GT 剩余部分
+            # generated_tokens: [bs, block_size]，但只有前 (num_visible + max_gen) 个是有效的
+            generated_part = generated_tokens[:, :num_visible_tokens + max_gen]
+            remaining_gt = all_tokens[:, num_visible_tokens + max_gen:]
+            predicted_tokens = torch.cat([generated_part, remaining_gt], dim=1)
 
         # -------------------------------------------------
         # Step 4: VQ decode 预测的 tokens
         # -------------------------------------------------
         recon_image = self.decode_tokens(predicted_tokens, image_size=vq_input_size)
-        # print(f"[MEM] VQ Decode 完成: {_mem():.2f}GB")
 
         # -------------------------------------------------
         # Step 5: 恢复到原始图像尺寸

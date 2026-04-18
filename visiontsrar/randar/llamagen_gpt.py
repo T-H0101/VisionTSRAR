@@ -353,6 +353,12 @@ class KVCache(nn.Module):
         assert input_pos.shape[0] == k_val.shape[2]
         k_out = self.k_cache
         v_out = self.v_cache
+        
+        # 自动处理数据类型转换（支持AMP混合精度训练）
+        if k_val.dtype != k_out.dtype:
+            k_out = k_out.to(k_val.dtype)
+            v_out = v_out.to(v_val.dtype)
+        
         k_out[:, :, input_pos] = k_val
         v_out[:, :, input_pos] = v_val
 

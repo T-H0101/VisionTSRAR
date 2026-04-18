@@ -107,7 +107,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         criterion = nn.MSELoss()
         return criterion
 
-    def _model_forward(self, batch_x, batch_x_mark, dec_inp, batch_y_mark):
+    def _model_forward(self, batch_x, batch_x_mark, dec_inp, batch_y_mark, current_epoch=0, use_teacher_forcing=None):
         """
         统一的前向调用接口，处理不同模型的输出格式
 
@@ -120,15 +120,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         Args:
             batch_x, batch_x_mark, dec_inp, batch_y_mark: 标准TSL输入
+            current_epoch: 当前训练epoch（用于Schedule Sampling）
+            use_teacher_forcing: 是否使用 teacher forcing（None=随机决策，True/False=外部控制）
         Returns:
             outputs: 模型预测输出
             model_loss: 模型自带的loss（VisionTSRAR训练时），无则None
         """
         model_loss = None
         if self.args.output_attention:
-            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark, current_epoch=current_epoch, use_teacher_forcing=use_teacher_forcing)[0]
         else:
-            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark, current_epoch=current_epoch, use_teacher_forcing=use_teacher_forcing)
 
         # VisionTSRAR训练时forward返回(prediction, loss)元组
         if self._is_visiontsrar and isinstance(outputs, tuple):
@@ -165,9 +167,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 
-                # 验证阶段不使用AMP，避免KVCache数据类型不匹配
-                # 因为RAR GPT的generate方法需要KVCache，而KVCache在初始化时是Float精度
-                outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                # 验证阶段使用AMP（KVCache已支持自动类型转换）
+                if self.args.use_amp:
+                    with torch.cuda.amp.autocast():
+                        outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                else:
+                    outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -226,6 +231,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
 
+        # 跟踪最佳训练loss（用于skip_validation模式）
+        best_train_loss = float('inf')
+
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
@@ -233,6 +241,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             self.model.train()
             epoch_time = time.time()
             pbar = tqdm(train_loader)
+            
+            # 梯度累积配置
+            accumulation_steps = getattr(self.args, 'gradient_accumulation_steps', 1)
+            
+            # 【精确控制 generate 频率】每 4 个 batch 用 1 次 generate
+            generate_frequency = getattr(self.args, 'generate_frequency', 4)
+            
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(pbar):
                 # fast_train_batches: 只训练指定数量的batch，用于快速验证代码逻辑
                 if self.args.fast_train_batches > 0 and i >= self.args.fast_train_batches:
@@ -240,7 +255,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     break
 
                 iter_count += 1
-                model_optim.zero_grad()
+                
+                # 【梯度累积】只在累积开始时清零梯度
+                if i % accumulation_steps == 0:
+                    model_optim.zero_grad()
                 
                 # ====== 显存监控点1: 数据加载到GPU ======
                 batch_x = batch_x.float().to(self.device)
@@ -254,11 +272,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
                 # encoder - decoder
+                # 【恢复 schedule sampling】不传 use_teacher_forcing，让内部逻辑控制
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
                         # ====== 显存监控点2: forward前 ======
                         # _print_mem("forward前", self.device)
-                        outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark, current_epoch=epoch, use_teacher_forcing=None)
                         # ====== 显存监控点3: forward后 ======
                         # _print_mem("forward后", self.device)
 
@@ -270,10 +289,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             loss = model_loss
                         else:
                             loss = criterion(outputs, batch_y)
+                        
+                        # 【梯度累积】loss 除以累积步数
+                        loss = loss / accumulation_steps
 
-                        train_loss.append(loss.item() if isinstance(loss, torch.Tensor) else loss)
+                        train_loss.append(loss.item() * accumulation_steps if isinstance(loss, torch.Tensor) else loss * accumulation_steps)
                 else:
-                    outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    outputs, model_loss = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark, current_epoch=epoch, use_teacher_forcing=None)
                     # _print_mem("forward后(无AMP)", self.device)
 
                     f_dim = -1 if self.args.features == 'MS' else 0
@@ -287,8 +309,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     else:
                         pred = outputs
                         loss = criterion(pred, batch_y)
+                    
+                    # 【梯度累积】loss 除以累积步数
+                    loss = loss / accumulation_steps
 
-                    train_loss.append(loss.item() if isinstance(loss, torch.Tensor) else loss)
+                    train_loss.append(loss.item() * accumulation_steps if isinstance(loss, torch.Tensor) else loss * accumulation_steps)
 
                 pbar.set_description("epoch: {0} | loss: {1:.7f}".format(epoch + 1, loss.item()))
                 if (i + 1) % 100 == 0:
@@ -305,13 +330,19 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     scaler.scale(loss).backward()
                     # ====== 显存监控点5: backward后 ======
                     # _print_mem("backward后(AMP)", self.device)
-                    scaler.step(model_optim)
-                    scaler.update()
+                    
+                    # 【梯度累积】只在累积完成时更新参数
+                    if (i + 1) % accumulation_steps == 0:
+                        scaler.step(model_optim)
+                        scaler.update()
                 else:
                     loss.backward()
                     # ====== 显存监控点5: backward后 ======
                     # _print_mem("backward后", self.device)
-                    model_optim.step()
+                    
+                    # 【梯度累积】只在累积完成时更新参数
+                    if (i + 1) % accumulation_steps == 0:
+                        model_optim.step()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
@@ -320,7 +351,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             if self.args.skip_validation:
                 print(f"[skip_validation] 跳过验证阶段")
                 vali_loss = float('inf')  # 用一个很大的值避免early_stopping
+                # 在skip_validation模式下，保存训练loss最低的模型
+                if train_loss < best_train_loss:
+                    best_train_loss = train_loss
+                    # 只保存可训练参数，避免保存冻结的RAR GPT（6.8G）
+                    trainable_state_dict = {k: v for k, v in self.model.named_parameters() if v.requires_grad}
+                    torch.save(trainable_state_dict, path + '/' + 'checkpoint.pth')
+                    checkpoint_size = sum(p.numel() * 4 / 1024**2 for p in trainable_state_dict.values())
+                    print(f"[skip_validation] 训练loss降低，模型已保存 (loss={train_loss:.7f}, size={checkpoint_size:.1f}MB)")
             else:
+                # 验证前清理显存，避免训练阶段的显存残留
+                torch.cuda.empty_cache()
                 vali_loss = self.vali(vali_data, vali_loader, criterion)
                 print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
                     epoch + 1, train_steps, train_loss, vali_loss))
@@ -356,7 +397,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         test_data, test_loader = self._get_data(flag='test')
         if test:
             print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join(f'{self.args.save_dir}/checkpoints/' + setting, 'checkpoint.pth')), strict=False)
+            checkpoint_path = os.path.join(f'{self.args.save_dir}/checkpoints/' + setting, 'checkpoint.pth')
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            # 检查是否是部分参数（只保存了可训练参数）
+            if len(checkpoint) < len(self.model.state_dict()):
+                print(f"[loading] 加载部分参数 ({len(checkpoint)} 个), 其余使用预训练权重")
+            self.model.load_state_dict(checkpoint, strict=False)
 
         valid_loss_path = os.path.join(f'{self.args.save_dir}/checkpoints/' + setting, 'valid_loss.json')
         if os.path.isfile(valid_loss_path):
@@ -393,8 +439,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder（VisionTSRAR在eval模式下使用generate）
-                # 测试阶段不使用AMP，避免KVCache数据类型不匹配
-                outputs, _ = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                # 测试阶段使用AMP（KVCache已支持自动类型转换）
+                if self.args.use_amp:
+                    with torch.cuda.amp.autocast():
+                        outputs, _ = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                else:
+                    outputs, _ = self._model_forward(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, :]

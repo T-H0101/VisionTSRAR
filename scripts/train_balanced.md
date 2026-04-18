@@ -1,16 +1,15 @@
-# VisionTSRAR 轻量Decoder训练命令（增强版）
-# 通道数128 + 4层，参数量约25M，checkpoint约100MB
+# VisionTSRAR 轻量Decoder训练命令（平衡版）
+# 通道数64 + 4层，参数量约12M，checkpoint约50MB
 
 # ============================================================
 # 重要说明
 # ============================================================
 # 1. 只保存可训练参数（轻量Decoder），不保存冻结的RAR GPT
-# 2. checkpoint大小约100MB，不会有I/O问题
+# 2. checkpoint大小约50MB，不会有I/O问题
 # 3. 训练完成后会自动打印checkpoint大小
-# 4. 增强版效果更好，但训练速度较慢
 
 # ============================================================
-# 完整训练版（10个epoch，batch_size=16，余弦退火学习率，增强版Decoder）
+# 训练命令
 # ============================================================
 python -m run \
     --task_name long_term_forecast \
@@ -26,7 +25,7 @@ python -m run \
     --pred_len 96 \
     --seasonal_patterns Monthly \
     --use_lightweight_decoder \
-    --lightweight_decoder_channels 128 \
+    --lightweight_decoder_channels 64 \
     --ft_type In \
     --use_amp \
     --batch_size 16 \
@@ -36,10 +35,10 @@ python -m run \
     --lradj cosine \
     --skip_validation 1 \
     --skip_test 1 \
-    --des light_decoder_ch128_bs16
+    --des light_decoder_ch64_4layers
 
 # ============================================================
-# 训练完成后单独测试（降低batch_size避免爆显存）
+# 测试命令
 # ============================================================
 python -m run \
     --task_name long_term_forecast \
@@ -55,54 +54,19 @@ python -m run \
     --pred_len 96 \
     --seasonal_patterns Monthly \
     --use_lightweight_decoder \
-    --lightweight_decoder_channels 128 \
+    --lightweight_decoder_channels 64 \
     --ft_type In \
     --use_amp \
     --batch_size 4 \
     --itr 1 \
-    --des light_decoder_ch128_bs16
-
-# ============================================================
-# 如果显存不够，降低batch_size
-# ============================================================
-python -m run \
-    --task_name long_term_forecast \
-    --is_training 1 \
-    --model VisionTSRAR \
-    --model_id light_decoder_ETTh1_sl96_pl96 \
-    --data ETTh1 \
-    --root_path ./dataset/ETT-small/ \
-    --data_path ETTh1.csv \
-    --features M \
-    --seq_len 96 \
-    --label_len 48 \
-    --pred_len 96 \
-    --seasonal_patterns Monthly \
-    --use_lightweight_decoder \
-    --lightweight_decoder_channels 128 \
-    --ft_type In \
-    --use_amp \
-    --batch_size 8 \
-    --itr 1 \
-    --train_epochs 10 \
-    --learning_rate 0.0001 \
-    --lradj cosine \
-    --skip_validation 1 \
-    --skip_test 1 \
-    --des light_decoder_ch128_bs8
+    --des light_decoder_ch64_4layers
 
 # ============================================================
 # 配置说明
 # ============================================================
-# 通道数: 128
+# 通道数: 64
 # 层数: 4层 (ch_mult=[1, 2, 4, 4])
-# 参数量: 约25M
-# checkpoint大小: 约100MB
-# 训练显存: 约22GB (batch_size=16)
+# 参数量: 约12M
+# checkpoint大小: 约50MB
+# 训练显存: 约21GB (batch_size=16)
 # 测试显存: 需要batch_size=4
-
-# ============================================================
-# 版本对比
-# ============================================================
-# 平衡版 (train_balanced.md): 通道64, 参数12M, checkpoint 50MB
-# 增强版 (本文件): 通道128, 参数25M, checkpoint 100MB

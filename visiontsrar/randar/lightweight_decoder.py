@@ -94,11 +94,12 @@ class LightweightDecoder(nn.Module):
         # 计算需要的上采样次数和最终分辨率
         # 如果 input=16, output=256，需要 4 次 2x 上采样：16→32→64→128→256
         # 但如果使用 3 层 + 最后的 bicubic，可以节省一层
-        num_upsamples = 3  # 16→32→64→128
-        final_conv_resolution = input_resolution * (2 ** num_upsamples)  # 16*8=128
+        # num_upsamples 根据 ch_mult 长度自动计算
+        self.num_resolutions = len(ch_mult)
+        num_upsamples = self.num_resolutions  # 与ch_mult长度一致
+        final_conv_resolution = input_resolution * (2 ** num_upsamples)
         self.num_upsamples = num_upsamples
 
-        self.num_resolutions = len(ch_mult)
         self.num_res_blocks = num_res_blocks
 
         # 计算最深层的通道数（作为中间处理通道）

@@ -8,7 +8,7 @@ echo "打包 VisionTSRAR 用于服务器部署"
 echo "========================================="
 
 PROJECT_NAME="VisionTSRAR"
-ZIP_FILE="${PROJECT_NAME}.zip"
+ZIP_FILE="${PROJECT_NAME}_1.zip"
 
 # 获取当前目录
 CURRENT_DIR=$(pwd)
@@ -19,7 +19,7 @@ echo "正在打包..."
 zip -r $ZIP_FILE . \
   -x "*.git/*" \
   -x "*.gitignore" \
-  -x "long_term_tsf/dataset/*" \
+  # -x "long_term_tsf/dataset/*" \
   -x "long_term_tsf/logs/*" \
   -x "long_term_tsf/checkpoints/*" \
   -x "long_term_tsf/results/*" \

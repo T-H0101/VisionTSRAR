@@ -85,6 +85,15 @@ if __name__ == '__main__':
     parser.add_argument('--loss', type=str, default='MSE', help='loss function')
     parser.add_argument('--lradj', type=str, default='type1', help='adjust learning rate')
     parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)
+    parser.add_argument('--use_torch_compile', action='store_true', help='use torch.compile to accelerate training (PyTorch 2.0+)', default=False)
+    
+    # 梯度累积（显存优化）
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1, 
+                        help='gradient accumulation steps (default=1, set to 2 for effective 2x batch size with same memory)')
+    
+    # generate 频率控制（精确控制 teacher forcing vs generate 的比例）
+    parser.add_argument('--generate_frequency', type=int, default=4,
+                        help='generate frequency: use generate every N batches (default=4, means 75%% TF, 25%% generate)')
 
     # GPU
     parser.add_argument('--use_gpu', type=bool, default=True, help='use gpu')

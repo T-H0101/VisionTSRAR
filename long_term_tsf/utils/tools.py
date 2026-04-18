@@ -58,7 +58,9 @@ class EarlyStopping:
     def save_checkpoint(self, val_loss, model, path):
         if self.verbose:
             print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
-        torch.save(model.state_dict(), path + '/' + 'checkpoint.pth')
+        # 只保存可训练参数，避免保存冻结的RAR GPT
+        trainable_state_dict = {k: v for k, v in model.named_parameters() if v.requires_grad}
+        torch.save(trainable_state_dict, path + '/' + 'checkpoint.pth')
         with open(path + "/" + "valid_loss.json", "w") as f:
             json.dump({"best_valid_loss": float(val_loss), "best_valid_epoch": self.epoch}, f)
         self.val_loss_min = val_loss

@@ -144,7 +144,7 @@ if __name__ == '__main__':
     # RAR模型专用参数
     # 以下参数控制VisionTSRAR模型的行为，基于RAR(Randomized Autoregressive)替代MAE
     parser.add_argument('--rar_arch', type=str, default='rar_l_0.3b',
-                        choices=['rar_l_0.3b'], help='RAR GPT架构选择')
+                        choices=['rar_l_0.3b', 'rar_l_35m'], help='RAR GPT架构选择')
     parser.add_argument('--vq_ckpt', type=str, default=None,
                         help='VQ tokenizer权重文件路径')
     parser.add_argument('--rar_ckpt', type=str, default=None,

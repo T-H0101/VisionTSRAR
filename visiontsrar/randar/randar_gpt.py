@@ -38,7 +38,7 @@ from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Union
 
 from .utils import DropPath, interleave_tokens, calculate_num_query_tokens_for_parallel_decoding
 from .generate import sample
@@ -151,11 +151,10 @@ class Attention(nn.Module):
         if self.kv_cache is not None and input_pos is not None:
             keys, values = self.kv_cache.update(input_pos, xk, xv)
 
-            max_pos = torch.max(input_pos) + 1
-            keys = keys[:, :, :max_pos]
-            values = values[:, :, :max_pos]
+            # 【修复】根据 keys 的实际长度调整 mask（支持 KV window）
+            kv_len = keys.shape[2]
             if mask is not None:
-                mask = mask[:, :, :, :max_pos]
+                mask = mask[:, :, :, :kv_len]
         else:
             keys, values = xk, xv
 
@@ -406,7 +405,7 @@ class RandARTransformer(nn.Module):
         elif isinstance(module, nn.Embedding):
             module.weight.data.normal_(mean=0.0, std=std)
 
-    def setup_caches(self, max_batch_size, max_seq_length, dtype):
+    def setup_caches(self, max_batch_size, max_seq_length, dtype, kv_window_size=None):
         """
         设置 KV Cache，为推理做准备。
         
@@ -414,14 +413,17 @@ class RandARTransformer(nn.Module):
             max_batch_size: 最大批次大小
             max_seq_length: 最大序列长度（对齐到8的倍数）
             dtype: 缓存数据类型
+            kv_window_size: KV window 大小（None 表示不限制）
         """
         head_dim = self.dim // self.n_head
         max_seq_length = find_multiple(max_seq_length, 8)
         self.max_seq_length = max_seq_length
         self.max_batch_size = max_batch_size
+        # 使用 n_kv_head（如果指定了GQA）或 n_head（标准多头）
+        n_kv_head = self.n_kv_head if self.n_kv_head is not None else self.n_head
         for b in self.layers:
             b.attention.kv_cache = KVCache(
-                max_batch_size, max_seq_length, self.n_head, head_dim, dtype
+                max_batch_size, max_seq_length, n_kv_head, head_dim, dtype, kv_window_size
             )
 
         causal_mask = torch.tril(
@@ -787,7 +789,7 @@ class RandARTransformer(nn.Module):
     def generate(
         self,
         cond: torch.Tensor,
-        token_order: torch.Tensor,
+        token_order: Union[torch.Tensor, str, None] = None,
         cfg_scales: Tuple[float, float] = (1.0, 1.0),
         num_inference_steps: int = 88,
         temperature: float = 1.0,
@@ -795,6 +797,7 @@ class RandARTransformer(nn.Module):
         top_p: float = 1.0,
         visible_tokens: Optional[torch.Tensor] = None,
         max_new_tokens: Optional[int] = None,
+        kv_window_size: Optional[int] = None,
     ):
         """
         RandAR 并行解码生成函数。
@@ -828,9 +831,14 @@ class RandARTransformer(nn.Module):
         - 剩余位置用 0 填充（后续在 _forward_train 中用 GT 填充）
         - 用于训练时降低显存消耗
         
+        【VisionTSRAR 新增】KV Window 限制：
+        当 kv_window_size 不为 None 时，限制 KV cache 的窗口大小。
+        - 只保留最近 K 个 token 的 KV，降低显存占用
+        - 训练时建议 K=64，推理时建议 K=128
+        
         Args:
             cond: [bsz, cls_token_num] 条件 token 索引
-            token_order: [bsz, block_size] 每个 token 的位置顺序
+            token_order: [bsz, block_size] 或 "raster"/None 每个 token 的位置顺序
             cfg_scales: (起始CFG缩放, 结束CFG缩放)，线性插值
             num_inference_steps: 推理步数（-1 表示逐 token 生成）
             temperature: 采样温度
@@ -838,6 +846,7 @@ class RandARTransformer(nn.Module):
             top_p: Top-p 采样的 p 值
             visible_tokens: [bsz, num_visible] 已知 token 索引（inpainting 模式）
             max_new_tokens: 最多生成的新 token 数量（None 表示生成全部）
+            kv_window_size: KV window 大小（None 表示不限制）
         
         Returns:
             result_indices: [bsz, block_size] 生成的 token 索引（光栅顺序）
@@ -846,14 +855,23 @@ class RandARTransformer(nn.Module):
         num_visible = 0  # 已知 token 数量
         
         # ===== Step-1: 生成 token 顺序和结果序列 =====
-        if token_order is None:
+        if token_order is None or isinstance(token_order, str):
+            # 生成默认顺序
             token_order = torch.arange(self.block_size, device=cond.device)
             token_order = token_order.unsqueeze(0).repeat(bs, 1)
             token_order = token_order.contiguous()
-            if self.position_order == "random":
+            
+            # 根据参数决定顺序类型
+            order_type = token_order if isinstance(token_order, str) else self.position_order
+            if order_type == "raster":
+                # 保持光栅扫描顺序（从左到右，从上到下）
+                pass  # token_order 已经是 raster 顺序
+            elif order_type == "random":
+                # 随机打乱顺序
                 for i in range(bs):
                     token_order[i] = token_order[i][torch.randperm(self.block_size)]
-            token_order = token_order.contiguous()
+                token_order = token_order.contiguous()
+            # 如果是 "raster" 字符串，保持默认的 raster 顺序
         else:
             assert token_order.shape == (bs, self.block_size)
         
@@ -889,7 +907,7 @@ class RandARTransformer(nn.Module):
         # ===== Step-4: KV Cache 设置 =====
         max_seq_len = cond_combined_tokens.shape[1] + self.block_size * 2
         with torch.device(cond.device):
-            self.setup_caches(max_batch_size=bs, max_seq_length=max_seq_len, dtype=self.tok_embeddings.weight.dtype)
+            self.setup_caches(max_batch_size=bs, max_seq_length=max_seq_len, dtype=self.tok_embeddings.weight.dtype, kv_window_size=kv_window_size)
 
         # ===== Step-5: 自回归生成（并行解码） =====
         if num_inference_steps == -1:

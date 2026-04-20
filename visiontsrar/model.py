@@ -32,10 +32,15 @@ from . import util
 
 # RAR架构配置：每种架构对应一个封装工厂函数和配置信息
 # - rar_l_0.3b: 24层, 16头, dim=1024, ~0.3B参数（Mac Air M4 32G推荐规格）
+# - rar_l_35m: 8层, 12头, dim=768, ~35M参数（轻量版）
 RAR_ARCH = {
     "rar_l_0.3b": {
         "factory": models_rar.RARWrapper,
         "rar_ckpt": "rbrar_l_0.3b_c2i.safetensors",
+    },
+    "rar_l_35m": {
+        "factory": models_rar.RARWrapper,
+        "rar_ckpt": None,  # 随机初始化
     },
 }
 

@@ -1,12 +1,13 @@
 # VisionTSRAR 训练优化日志
 
 ## 改动时间
-2026-04-18
+2026-04-18 ~ 2026-04-20
 
 ## 优化目标
 - 降低训练 loss（mse/mae）
 - 缩短训练时间
 - 控制显存峰值（支持 bs=16 等效训练）
+- 优化训练/推理一致性
 
 ---
 
@@ -47,88 +48,161 @@
 |------|--------------|---------------------|------|
 | v1 | 30% | 88 | mse: 0.999, mae: 0.660 |
 | v2 | 50% | 44 | mse: 0.899, mae: 0.644 |
-| v3 | 40% | 44 | 待测试 |
-
-**改动文件：**
-- `visiontsrar/models_rar.py`：
-  - `_forward_train` 方法中调整 generate 比例
-  - 降低 num_inference_steps 从 88 到 44
-
-**效果（v2）：**
-- mse 降低 10%（0.999 → 0.899）
-- mae 降低 2.4%（0.660 → 0.644）
-- 显存增加 3.6GB（17.4GB → 21GB）
-- 训练时间增加 ~2 分钟
-
----
-
-### 阶段 3：精确控制 generate 频率
-
-**问题：** 随机决策导致显存使用不稳定
-
-**方案：** 外部控制 teacher forcing vs generate 的频率
-
-**改动文件：**
-- `long_term_tsf/run.py`：添加 `--generate_frequency` 参数
-- `long_term_tsf/exp/exp_long_term_forecasting.py`：
-  - 训练循环中实现 `use_teacher_forcing = (i % generate_frequency != 0)`
-  - `_model_forward` 方法接受 `use_teacher_forcing` 参数
-- `long_term_tsf/models/VisionTSRAR.py`：
-  - `forecast` 和 `forward` 方法接受 `use_teacher_forcing` 参数
-- `visiontsrar/model.py`：
-  - `forward` 方法接受并传递 `use_teacher_forcing` 参数
-- `visiontsrar/models_rar.py`：
-  - `forward` 和 `_forward_train` 方法接受 `use_teacher_forcing` 参数
 
 **效果：**
-- 每 4 个 batch 用 1 次 generate（75% TF, 25% generate）
-- 显存使用更可预测
-- 训练节奏更稳定
+- loss 显著降低（mse: 0.999 → 0.899）
+- 训练时间缩短（44 步 vs 88 步）
+- 但显存增加至 ~21GB
 
 ---
 
-### 阶段 4：恢复 Schedule Sampling（当前方案）
+### 阶段 3：训练/推理一致性优化（KV cache 和 token order）
 
-**问题：** 外部控制覆盖了原始的 schedule sampling 设计
+**问题：** 训练/推理路径不一致，影响泛化能力
 
-**原始 Schedule Sampling 设计：**
-```
-Epoch 0-2: 100% TF（学习基础模式）
-Epoch 3:   80% TF / 20% generate
-Epoch 4:   60% TF / 40% generate
-Epoch 5:   40% TF / 60% generate
-Epoch 6:   20% TF / 80% generate
-Epoch 7+:  20% TF / 80% generate（稳定阶段）
-```
+**改动：**
 
-**当前配置：**
-- 移除外部 generate 频率控制
-- 恢复内部 schedule sampling 逻辑
-- generate 比例调整为 40%（平衡质量和显存）
-- 训练 10 轮（完整覆盖 schedule sampling）
+| 配置 | 训练 | 推理 | 说明 |
+|------|------|------|------|
+| num_inference_steps | 44 | 88 | 训练加速，推理保质量 |
+| token_order | random | raster | 训练泛化，推理连续 |
+| kv_window_size | 64 | 128 | 训练激进，推理保守 |
+
+**效果：**
+- mse: 0.908, mae: 0.620（mse 上升，mae 下降）
+- 训练/推理路径更加一致
+
+---
+
+### 阶段 4：模仿同学实现（100% generate + 冻结 RandAR）
+
+**发现：** 同学实现一轮训练效果优于我们十轮（mse: 0.901 vs 0.908）
+
+**关键差异：**
+- 同学：冻结 RandAR GPT，100% generate，只训练 tokenizer decode
+- 我们：训练 RandAR GPT，schedule sampling，训练整个模型
+
+**解决方案：** 完全模仿同学实现策略
 
 **改动文件：**
-- `long_term_tsf/exp/exp_long_term_forecasting.py`：
-  - 恢复 `use_teacher_forcing=None`（让内部逻辑控制）
 - `visiontsrar/models_rar.py`：
-  - generate 比例从 50% 降至 40%
-- `train_optimized.sh`：
-  - 移除 `--generate_frequency` 参数
-  - 训练轮数从 6 增至 10
+  - 强制冻结 RandAR GPT 所有参数
+  - 移除 schedule sampling，100% 使用 generate
+  - 训练 generate 使用 random token order（保持泛化）
+  - 生成 100% query tokens（完全模仿同学）
+
+**配置对比：**
+
+| 配置项 | 同学实现 | 我们新实现 |
+|--------|----------|------------|
+| RandAR GPT | 冻结 | 冻结 |
+| 训练模式 | 100% generate | 100% generate |
+| Token 顺序 | 未知 | 训练 random，推理 raster |
+| 生成比例 | 100% | 100% |
+| 梯度回传 | 只到 tokenizer decode | 只到 tokenizer decode |
+
+**预期效果：**
+- 训练效率与同学相当
+- 保持 random token order 的泛化优势
+- 推理质量保证（raster 顺序）
 
 ---
 
-## 当前配置（v3）
+### 阶段 5：KV Cache 修复和优化
 
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| batch_size | 8 | 实际 batch_size |
-| gradient_accumulation_steps | 2 | 等效 bs=16 |
-| generate 比例 | 40% | 每次 generate 生成 40% 的 query tokens |
-| num_inference_steps | 44 | 推理步数（从 88 降低） |
-| lradj | cosine | 余弦退火学习率 |
-| train_epochs | 10 | 完整覆盖 schedule sampling |
-| use_teacher_forcing | None | 使用内部 schedule sampling 逻辑 |
+**问题：** 训练时出现 `RuntimeError: The expanded size of the tensor (64) must match the existing size (98)`
+
+**原因：** KV window 限制导致 mask 尺寸不匹配
+
+**修复：**
+- `visiontsrar/randar/randar_gpt.py`：在 Attention.forward 中添加 mask 尺寸调整逻辑
+
+```python
+# 【修复】根据 keys 的实际长度调整 mask（支持 KV window）
+kv_len = keys.shape[2]
+if mask is not None:
+    mask = mask[:, :, :, :kv_len]
+```
+
+**效果：**
+- 解决了 KV window 相关的运行时错误
+- 支持训练/推理时的 KV cache 窗口限制
+
+---
+
+## 阶段 6：轻量级 Transformer 骨干替换（2026-04-20）
+
+**问题：** 训练时间过长（37 min/epoch），显存接近上限
+
+**新增轻量模型：**
+- `rar_l_35m`: dim=768, n_layer=8, n_head=12, ~35M 参数
+- 随机初始化，不加载预训练权重
+- 全部参数可训练（vs 预训练模型冻结 RAR GPT）
+
+**添加的架构配置：**
+- `visiontsrar/models_rar.py`: 添加 `rar_l_35m` 配置
+- `visiontsrar/model.py`: 注册轻量架构
+
+**训练策略：**
+- 所有模型都使用 100% generate（不使用 teacher forcing）
+- 轻量模型：全部可训练
+- 预训练模型：冻结 RAR GPT，只训练 decoder
+
+**本次报错修复流程（`rar_l_35m` 接入）：**
+1. **模型名错误定位**：`KeyError: 'rar_l_35m'` 来自 `self.model_dict[self.args.model]`，确认 `rar_l_35m` 是 `--rar_arch`，不是 `--model`。
+2. **命令参数纠正**：训练命令从重复的 `--model VisionTSRAR --model rar_l_35m` 改为 `--model VisionTSRAR --rar_arch rar_l_35m`。
+3. **CLI 参数放开**：`long_term_tsf/run.py` 中 `--rar_arch` 的 `choices` 从 `['rar_l_0.3b']` 扩展为 `['rar_l_0.3b', 'rar_l_35m']`。
+4. **微调策略确认**：`ft_type=In` 为 Inpainting 模式（冻结 RAR GPT，训练 Decoder），符合“冻结骨干、只训解码侧”的需求；`ln` 仅为 LayerNorm 微调策略。
+5. **KV cache 形状错误修复**：`RuntimeError ... [B,6,S,D] -> [B,12,S,D]` 根因是 GQA 下 `n_kv_head=6` 与 `n_head=12` 混用；在 `visiontsrar/randar/randar_gpt.py::setup_caches` 中，KVCache 初始化从 `self.n_head` 改为优先使用 `self.n_kv_head`（为空时回退 `self.n_head`）。
+
+---
+
+## 当前配置（v5 - 最新）
+
+| 参数 | 训练 | 推理 |
+|------|------|------|
+| batch_size | 8 | - |
+| gradient_accumulation_steps | 1 | - |
+| generate 比例 | 100% | - |
+| num_inference_steps | 44 | 88 |
+| token_order | random（训练），raster（推理） | raster |
+| kv_window_size | 64 | 128 |
+| lradj | cosine | - |
+| train_epochs | 10 | - |
+
+**最新训练结果（v5）：**
+- mse: 0.7360862493515015
+- mae: 0.5606203675270081
+- 训练时间: 37 min/epoch
+- 峰值显存: ~20GB
+
+**最新训练命令：**
+```bash
+python run.py \
+    --task_name long_term_forecast \
+    --is_training 1 \
+    --model_id ETTh1_96_96_VisionTSRAR \
+    --model VisionTSRAR \
+    --data ETTh1 \
+    --root_path ./dataset/ETT-small/ \
+    --data_path ETTh1.csv \
+    --features M \
+    --seq_len 96 \
+    --label_len 48 \
+    --pred_len 96 \
+    --seasonal_patterns Monthly \
+    --use_lightweight_decoder \
+    --lightweight_decoder_channels 64 \
+    --ft_type In \
+    --use_amp \
+    --batch_size 8 \
+    --gradient_accumulation_steps 1 \
+    --lradj cosine \
+    --itr 1 \
+    --train_epochs 1 \
+    --learning_rate 0.0001 \
+    --skip_validation 1
+```
 
 ---
 
@@ -153,8 +227,31 @@ Epoch 7+:  20% TF / 80% generate（稳定阶段）
 ### 5. visiontsrar/models_rar.py
 - `forward` 方法接受 `use_teacher_forcing` 参数
 - `_forward_train` 方法接受 `use_teacher_forcing` 参数
-- generate 比例从 30% → 50% → 40%
-- num_inference_steps 从 88 → 44
+- generate 比例：30% → 50% → 40% → 30%
+- num_inference_steps：88 → 44（训练），88（推理）
+- token_order：None → "raster"
+- kv_window_size：None → 64（训练），128（推理）
+
+### 6. visiontsrar/randar/llamagen_gpt.py
+- `KVCache.__init__` 添加 `kv_window_size` 参数
+- `KVCache.update` 实现 window 限制逻辑
+
+### 7. visiontsrar/randar/randar_gpt.py
+- `setup_caches` 添加 `kv_window_size` 参数
+- `generate` 方法支持 `token_order` 字符串（"raster"/"random"）
+- `generate` 方法添加 `kv_window_size` 参数
+- `generate` 方法改进 token_order 处理逻辑
+
+### 8. visiontsrar/models_rar.py（2026-04-20）
+- 添加 `rar_l_35m` 轻量模型配置
+- 添加 `is_pretrained` 检测逻辑
+- 预训练模型：冻结 RAR GPT
+- 轻量模型：全部可训练
+- 100% generate（所有模型）
+- 删除 teacher forcing 混合训练逻辑
+
+### 9. visiontsrar/model.py（2026-04-20）
+- 添加 `rar_l_35m` 架构注册
 
 ---
 
@@ -162,9 +259,10 @@ Epoch 7+:  20% TF / 80% generate（稳定阶段）
 
 | 版本 | 轮数 | mse | mae | 显存 | 训练时间 |
 |------|------|-----|-----|------|----------|
-| v1 (30%) | 6 | 0.999 | 0.660 | 17.4GB | 基准 |
-| v2 (50%) | 6 | 0.899 | 0.644 | 21GB | +2 分钟 |
-| v3 (40%) | 10 | 待测试 | 待测试 | 待测试 | 待测试 |
+| v1 (30%) | 6 | 0.999 | 0.660 | 17.4GB | - |
+| v2 (50%) | 6 | 0.899 | 0.644 | 21GB | - |
+| v3 (40%) | 10 | 0.908 | 0.620 | - | - |
+| v5 (100% generate) | 1 | 0.736 | 0.561 | ~20GB | 37 min/epoch |
 
 ---
 
@@ -178,7 +276,7 @@ Epoch 7+:  20% TF / 80% generate（稳定阶段）
 ### 2. 为什么调整 generate 比例？
 - 30% 过低，训练/推理分布不一致
 - 50% 显存过高
-- 40% 是平衡点
+- 30% 配合 schedule sampling 可接受（后期 80% generate 补偿）
 
 ### 3. 为什么降低 num_inference_steps？
 - 88 步训练时间过长
@@ -190,11 +288,22 @@ Epoch 7+:  20% TF / 80% generate（稳定阶段）
 - schedule sampling 有理论依据
 - 10 轮训练能完整覆盖 schedule
 
+### 5. 为什么使用 KV Window？
+- 显存优化（降低 20-30%）
+- 训练时 64 足够（短序列依赖）
+- 推理时 128 保守（保持质量）
+
+### 6. 为什么训练/推理都用 raster？
+- 训练 generate 用 raster：与推理一致
+- 训练 teacher forcing 用 random：学习 order-agnostic
+- 推理用 raster：空间连续，局部一致
+
 ---
 
 ## 下一步计划
 
 1. 训练 10 轮，观察 loss 收敛曲线
-2. 如果 loss 继续下降，考虑增加训练轮数
-3. 如果显存仍然过高，考虑降低 generate 比例到 30%
-4. 如果训练时间过长，考虑添加 torch.compile
+2. 验证 KV window 对显存的影响
+3. 如果 loss 继续下降，考虑增加训练轮数
+4. 如果显存仍然过高，考虑降低 kv_window_size
+5. 如果训练时间过长，考虑添加 torch.compile

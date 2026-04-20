@@ -110,6 +110,27 @@ RAR_ARCH_CONFIG = {
         # 预训练权重文件名
         "rar_ckpt": "rbrar_l_0.3b_c2i.safetensors",
     },
+    # 轻量级模型配置 (~35M 参数)
+    "rar_l_35m": {
+        "n_layer": 8,
+        "n_head": 12,
+        "n_kv_head": 6,
+        "dim": 768,
+        "model_type": "c2i",
+        "vocab_size": 16384,
+        "block_size": 256,
+        "num_classes": 1000,
+        "cls_token_num": 1,
+        "resid_dropout_p": 0.1,
+        "ffn_dropout_p": 0.1,
+        "drop_path_rate": 0.0,
+        "token_dropout_p": 0.1,
+        "grad_checkpointing": True,
+        "zero_class_qk": True,
+        "num_inference_steps": 88,
+        "position_order": "random",
+        "rar_ckpt": None,  # 随机初始化，不加载预训练权重
+    },
 }
 
 # VQ Tokenizer 配置（从 llamagen.yaml）
@@ -240,17 +261,25 @@ class RARWrapper(nn.Module):
         # 覆盖推理参数
         arch_config['num_inference_steps'] = num_inference_steps
         arch_config['position_order'] = position_order
-        
+
+        # 检查是否是预训练模型
+        rar_ckpt_file = arch_config.get('rar_ckpt')
+        self.is_pretrained = rar_ckpt_file is not None
+
         self.rar_gpt = RandARTransformer(**arch_config)
-        
-        # 加载 RAR GPT 预训练权重
-        if load_ckpt:
+
+        # 加载 RAR GPT 预训练权重（仅预训练模型）
+        if load_ckpt and self.is_pretrained:
             if rar_ckpt_path is not None:
                 self._load_rar_ckpt(rar_ckpt_path)
             else:
                 rar_ckpt_path = download_rar_ckpt(rar_arch, ckpt_dir)
                 self._load_rar_ckpt(rar_ckpt_path)
-        
+        elif not self.is_pretrained:
+            # 轻量模型：随机初始化，打印参数量
+            total_params = sum(p.numel() for p in self.rar_gpt.parameters())
+            print(f"[轻量模型 {rar_arch}] 随机初始化，总参数量: {total_params:,}")
+
         # 根据 finetune_type 冻结 RAR GPT 参数
         self._apply_finetune_strategy(finetune_type)
         
@@ -405,20 +434,40 @@ class RARWrapper(nn.Module):
         # ============================================================
         # 2. 处理 RAR GPT 的冻结策略
         # ============================================================
-        if finetune_type == 'full':
-            return  # 不冻结任何参数
-
-        for n, param in self.rar_gpt.named_parameters():
-            if finetune_type == 'ln':
-                param.requires_grad = 'norm' in n.lower()
-            elif finetune_type == 'bias':
-                param.requires_grad = 'bias' in n
-            elif finetune_type in ('none', 'In', 'In_light'):
+        # 【轻量模型】非预训练模型：全部可训练
+        if not self.is_pretrained:
+            for param in self.rar_gpt.parameters():
+                param.requires_grad = True
+            print(f"[轻量模型] RAR GPT 全部可训练，参数量: {sum(p.numel() for p in self.rar_gpt.parameters()):,}")
+        else:
+            # 【预训练模型】强制冻结 RAR GPT
+            for param in self.rar_gpt.parameters():
                 param.requires_grad = False
-            elif 'mlp' in finetune_type:
-                param.requires_grad = '.feed_forward.' in n or 'ffn' in n.lower()
-            elif 'attn' in finetune_type:
-                param.requires_grad = '.attention.' in n
+            print(f"[优化] RAR GPT 已冻结，参数量: {sum(p.numel() for p in self.rar_gpt.parameters()):,}")
+        
+        # 根据 finetune_type 处理 VQ Tokenizer
+        if finetune_type == 'full':
+            # 全参数训练：解冻 VQ Decoder
+            for name, param in self.vq_tokenizer.named_parameters():
+                if 'encoder' in name.lower() or 'quantize' in name.lower():
+                    param.requires_grad = False
+                else:
+                    param.requires_grad = True
+        elif finetune_type in ('In', 'In_light'):
+            # Inpainting 模式：训练 VQ Decoder
+            if self.use_lightweight_decoder:
+                for param in self.lightweight_decoder.parameters():
+                    param.requires_grad = True
+            else:
+                for name, param in self.vq_tokenizer.named_parameters():
+                    if 'encoder' in name.lower() or 'quantize' in name.lower():
+                        param.requires_grad = False
+                    else:
+                        param.requires_grad = True
+        else:
+            # 其他模式：冻结整个 VQ Tokenizer
+            for param in self.vq_tokenizer.parameters():
+                param.requires_grad = False
     
     def encode_image(self, image_input: torch.Tensor) -> torch.Tensor:
         """
@@ -605,61 +654,29 @@ class RARWrapper(nn.Module):
         total_tokens = all_tokens.shape[1]
 
         # -------------------------------------------------
-        # Step 1: 计算 teacher forcing ratio
+        # Step 1: 准备 visible tokens 和条件
         # -------------------------------------------------
-        if current_epoch <= 2:
-            teacher_forcing_ratio = 1.0
-        elif current_epoch <= 6:
-            teacher_forcing_ratio = 1.0 - (current_epoch - 2) / 4 * 0.8
-        else:
-            teacher_forcing_ratio = 0.2
-
-        # -------------------------------------------------
-        # Step 2: 准备 visible tokens 和条件
-        # -------------------------------------------------
-        # print(f"[MEM] _forward_train 开始: {_mem():.2f}GB")
         visible_tokens = all_tokens[:, :num_visible_tokens]
         cond_idx = torch.zeros(bs, dtype=torch.long, device=all_tokens.device)
 
         # -------------------------------------------------
-        # Step 3: Schedule Sampling - 决定使用 teacher forcing 还是 generate
+        # Step 2: 100% generate（所有模型都用generate，不使用teacher forcing）
         # -------------------------------------------------
-        # 【优化】如果外部传入了 use_teacher_forcing，则使用外部决策
-        if use_teacher_forcing is None:
-            use_teacher_forcing = torch.rand(1).item() < teacher_forcing_ratio
+        query_len = total_tokens - num_visible_tokens
+        max_gen = query_len  # 生成全部 query tokens
 
-        if use_teacher_forcing:
-            # Teacher forcing：使用 RAR GPT forward
-            with torch.no_grad():
-                token_logits, _, token_order = self.rar_gpt(
-                    idx=all_tokens,
-                    cond_idx=cond_idx,
-                    token_order=None,
-                    targets=all_tokens,
-                    visible_tokens=visible_tokens,
-                )
-            predicted_tokens = StraightThroughEstimator.apply(token_logits)
-        else:
-            # 自回归生成：使用 RAR GPT generate（平衡训练质量和显存）
-            # 【优化】生成 40% 的 query tokens，平衡训练质量和显存
-            query_len = total_tokens - num_visible_tokens
-            max_gen = int(query_len * 0.4)  # 生成 40%
-            max_gen = max(1, max_gen)  # 至少生成 1 个 token
-            
-            with torch.no_grad():
-                generated_tokens = self.rar_gpt.generate(
-                    cond=cond_idx,
-                    token_order=None,
-                    visible_tokens=visible_tokens,
-                    max_new_tokens=max_gen,  # 限制生成长度
-                    num_inference_steps=44,  # 降低推理步数（从 88 到 44，加速训练）
-                )
-            
-            # 【拼接策略】生成的部分 + GT 剩余部分
-            # generated_tokens: [bs, block_size]，但只有前 (num_visible + max_gen) 个是有效的
-            generated_part = generated_tokens[:, :num_visible_tokens + max_gen]
-            remaining_gt = all_tokens[:, num_visible_tokens + max_gen:]
-            predicted_tokens = torch.cat([generated_part, remaining_gt], dim=1)
+        with torch.no_grad():
+            generated_tokens = self.rar_gpt.generate(
+                cond=cond_idx,
+                token_order="random",     # 训练 generate 使用 random 顺序（泛化能力）
+                visible_tokens=visible_tokens,
+                max_new_tokens=max_gen,   # 生成全部 query tokens
+                num_inference_steps=44,   # 训练时使用 44 步加速
+                kv_window_size=64,        # KV window 限制（训练激进设置）
+            )
+
+        # 全部使用生成的 tokens（100% generate）
+        predicted_tokens = generated_tokens
 
         # -------------------------------------------------
         # Step 4: VQ decode 预测的 tokens
@@ -775,15 +792,17 @@ class RARWrapper(nn.Module):
         
         # 直接利用 randar_gpt.generate() 的 visible_tokens 参数
         # 已知 token 作为 prefix，只生成剩余 block_size - num_visible_tokens 个 token
+        # 【优化】推理时使用 raster 顺序 + 88 步保证生成质量
         generated_tokens = self.rar_gpt.generate(
             cond=cond_idx,
-            token_order=None,        # 使用 position_order 决定顺序
-            cfg_scales=(1.0, 1.0),   # 时序预测不使用 CFG
-            num_inference_steps=self.num_inference_steps,
+            token_order="raster",      # 推理使用 raster 顺序（空间连续，局部一致）
+            cfg_scales=(1.0, 1.0),     # 时序预测不使用 CFG
+            num_inference_steps=88,    # 推理时使用 88 步（高质量生成）
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
             visible_tokens=visible_tokens,  # 传入可见token，启用 inpainting 模式
+            kv_window_size=128,        # KV window 限制（推理保守设置）
         )
         
         # ============================================================

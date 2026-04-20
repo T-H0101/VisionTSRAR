@@ -181,6 +181,13 @@ experiments/
 *.nsys-rep
 *.rocprof
 
+# 压缩包
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+
 # Windows 特定
 Thumbs.db
 Desktop.ini

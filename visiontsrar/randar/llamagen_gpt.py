@@ -330,12 +330,17 @@ class KVCache(nn.Module):
     将每步复杂度从 O(seq_len) 降低到 O(1)。
     
     缓存形状: (max_batch_size, n_head, max_seq_length, head_dim)
+    
+    【VisionTSRAR 新增】KV Window 限制：
+    当 kv_window_size 不为 None 时，只保留最近 K 个 token 的 KV，
+    降低显存占用，适用于长序列生成。
     """
-    def __init__(self, max_batch_size, max_seq_length, n_head, head_dim, dtype):
+    def __init__(self, max_batch_size, max_seq_length, n_head, head_dim, dtype, kv_window_size=None):
         super().__init__()
         cache_shape = (max_batch_size, n_head, max_seq_length, head_dim)
         self.register_buffer("k_cache", torch.zeros(cache_shape, dtype=dtype))
         self.register_buffer("v_cache", torch.zeros(cache_shape, dtype=dtype))
+        self.kv_window_size = kv_window_size  # KV window 大小
 
     def update(self, input_pos, k_val, v_val):
         """
@@ -361,6 +366,16 @@ class KVCache(nn.Module):
         
         k_out[:, :, input_pos] = k_val
         v_out[:, :, input_pos] = v_val
+
+        # 【VisionTSRAR 新增】KV Window 限制
+        if self.kv_window_size is not None:
+            # 获取当前最大位置
+            max_pos = input_pos.max().item()
+            # 计算 window 起始位置
+            window_start = max(0, max_pos - self.kv_window_size + 1)
+            # 只保留 window 内的 KV
+            k_out = k_out[:, :, window_start:max_pos+1]
+            v_out = v_out[:, :, window_start:max_pos+1]
 
         return k_out, v_out
 
